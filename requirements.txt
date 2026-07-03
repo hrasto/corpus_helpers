@@ -1,0 +1,7 @@
+tokenizers
+picky_bpe @ git+https://github.com/hrasto/picky_bpe.git
+morfessor
+tqdm
+numpy
+scikit-learn
+pandas
