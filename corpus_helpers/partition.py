@@ -1,6 +1,7 @@
 import itertools
 import os
 import pickle
+import logging
 
 import numpy as np
 from sklearn.cluster import KMeans
@@ -87,7 +88,7 @@ def plot_tsne(coords_2d, color_by, ax=None, **scatter_kwargs):
 
 # --- partitioning ---
 
-def partition(docs_latent, n_clusters, seed, clusterer=KMeans):
+def partition(docs_latent, n_clusters, clusterer=None):
     """
     Cluster docs_latent using an sklearn clusterer class.
 
@@ -102,8 +103,12 @@ def partition(docs_latent, n_clusters, seed, clusterer=KMeans):
         KMeans (default), BisectingKMeans, and SpectralClustering are
         all compatible.
     """
+    if clusterer is None: 
+        clusterer = KMeans
+        logging.warning(f"running KMeans without setting the random state")
+    
     def _cluster(X, k):
-        return clusterer(n_clusters=k, random_state=seed).fit_predict(X)
+        return clusterer(n_clusters=k).fit_predict(X)
 
     if isinstance(n_clusters, int):
         return _cluster(docs_latent, n_clusters)
