@@ -88,8 +88,38 @@ def plot_tsne(coords_2d, color_by, ax=None, **scatter_kwargs):
 # --- partitioning ---
 
 def partition(docs_latent, n_clusters, seed):
-    """KMeans clustering on latent representations. Returns integer assignment array."""
-    return KMeans(n_clusters=n_clusters, random_state=seed).fit_predict(docs_latent)
+    """
+    KMeans clustering on latent representations.
+
+    n_clusters: int → flat partition, returns 1-D integer assignment array.
+    n_clusters: list[int] → hierarchical partition, returns 2-D array of shape
+        (n_docs, n_levels).  Column i holds the local cluster id at level i
+        (0 … n_clusters[i]-1 within each parent group); the full row is the
+        path that uniquely identifies a leaf cluster.
+    """
+    if isinstance(n_clusters, int):
+        return KMeans(n_clusters=n_clusters, random_state=seed).fit_predict(docs_latent)
+
+    n_docs = len(docs_latent)
+    assignments = np.zeros((n_docs, len(n_clusters)), dtype=int)
+
+    assignments[:, 0] = KMeans(
+        n_clusters=n_clusters[0], random_state=seed
+    ).fit_predict(docs_latent)
+
+    for level in range(1, len(n_clusters)):
+        k = n_clusters[level]
+        for parent_id in np.unique(assignments[:, level - 1]):
+            mask = assignments[:, level - 1] == parent_id
+            sub = docs_latent[mask]
+            if len(sub) <= k:
+                assignments[mask, level] = np.arange(len(sub))
+            else:
+                assignments[mask, level] = KMeans(
+                    n_clusters=k, random_state=seed
+                ).fit_predict(sub)
+
+    return assignments
 
 
 def get_region_sizes(assign, file_sizes):
