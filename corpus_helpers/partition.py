@@ -87,25 +87,31 @@ def plot_tsne(coords_2d, color_by, ax=None, **scatter_kwargs):
 
 # --- partitioning ---
 
-def partition(docs_latent, n_clusters, seed):
+def partition(docs_latent, n_clusters, seed, clusterer=KMeans):
     """
-    KMeans clustering on latent representations.
+    Cluster docs_latent using an sklearn clusterer class.
 
     n_clusters: int → flat partition, returns 1-D integer assignment array.
     n_clusters: list[int] → hierarchical partition, returns 2-D array of shape
         (n_docs, n_levels).  Column i holds the local cluster id at level i
         (0 … n_clusters[i]-1 within each parent group); the full row is the
         path that uniquely identifies a leaf cluster.
+
+    clusterer: sklearn clustering class instantiated as
+        clusterer(n_clusters=k, random_state=seed) at each step.
+        KMeans (default), BisectingKMeans, and SpectralClustering are
+        all compatible.
     """
+    def _cluster(X, k):
+        return clusterer(n_clusters=k, random_state=seed).fit_predict(X)
+
     if isinstance(n_clusters, int):
-        return KMeans(n_clusters=n_clusters, random_state=seed).fit_predict(docs_latent)
+        return _cluster(docs_latent, n_clusters)
 
     n_docs = len(docs_latent)
     assignments = np.zeros((n_docs, len(n_clusters)), dtype=int)
 
-    assignments[:, 0] = KMeans(
-        n_clusters=n_clusters[0], random_state=seed
-    ).fit_predict(docs_latent)
+    assignments[:, 0] = _cluster(docs_latent, n_clusters[0])
 
     for level in range(1, len(n_clusters)):
         k = n_clusters[level]
@@ -115,9 +121,7 @@ def partition(docs_latent, n_clusters, seed):
             if len(sub) <= k:
                 assignments[mask, level] = np.arange(len(sub))
             else:
-                assignments[mask, level] = KMeans(
-                    n_clusters=k, random_state=seed
-                ).fit_predict(sub)
+                assignments[mask, level] = _cluster(sub, k)
 
     return assignments
 
@@ -137,24 +141,6 @@ def get_region_sizes(assign, file_sizes):
     for r in np.unique(assign):
         regions[int(r)] = float(file_sizes[assign == r].sum() / 1e6)
     return regions
-
-
-def split_largest_region(assign, docs_latent, region_sizes, seed):
-    """
-    Split the largest region (by size) into two with KMeans(n_clusters=2).
-    One half keeps the original region id; the other gets max(assign)+1.
-    Returns a new assignment array (does not modify in place).
-
-    region_sizes: dict {region_id: size} as returned by get_region_sizes()
-    """
-    assign = np.array(assign, copy=True)
-    largest = max(region_sizes, key=region_sizes.__getitem__)
-    indices = np.where(assign == largest)[0]
-    sub_assign = KMeans(n_clusters=2, random_state=seed).fit_predict(docs_latent[indices])
-    new_id = int(assign.max()) + 1
-    sub_assign = sub_assign.astype(assign.dtype)
-    assign[indices] = np.where(sub_assign == 0, largest, new_id)
-    return assign
 
 
 def make_subsets(assign, docs_latent, subset_size, metric='cosine'):
