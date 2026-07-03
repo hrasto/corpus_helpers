@@ -28,6 +28,14 @@ The packages contains the following modules:
 - functions for vocabulary construction (bpe, unigram, pickybpe, sentencepiece, wordpiece, morfessor, etc.)
 - group-frequency filtering
 
+**Installing dependencies/Running tests**
+
+```bash
+pip install -r requirements.txt
+pip install pytest
+pytest tests/
+```
+
 ---
 
 **Table of contents**
@@ -91,7 +99,55 @@ Available vocab builders: `build_bpe_vocab`, `build_picky_bpe_vocab`, `build_uni
 
 ## Domain distance
 
-*TODO*
+`metrics.py` provides surface-level distance metrics between two text corpora.
+Each corpus is an iterable of strings (documents or lines).
+
+### Lexical metrics
+
+```python
+from corpus_helpers.metrics import (
+    lexical_overlap,
+    lexical_divergence,
+    ngram_counts,
+    ngram_overlap,
+    ngram_divergence,
+)
+
+a = ["the cat sat on the mat", "a quick brown fox"]
+b = ["the dog lay on the rug", "a lazy brown dog"]
+
+# Jaccard overlap of word vocabularies (0 = disjoint, 1 = identical)
+lexical_overlap(a, b)           # → float in [0, 1]
+
+# JSD between word-frequency distributions (0 = identical)
+lexical_divergence(a, b)                     # JSD (default)
+lexical_divergence(a, b, method="kl")        # KL divergence (asymmetric)
+
+# Character trigram overlap / divergence
+c3 = ngram_counts(a, n=3, unit="char")
+d3 = ngram_counts(b, n=3, unit="char")
+ngram_overlap(c3, d3)
+ngram_divergence(c3, d3, method="jsd")
+```
+
+### BPE merge-rank correlation
+
+```python
+from corpus_helpers.metrics import bpe_merge_rank_correlation
+
+score = bpe_merge_rank_correlation(a, b, vocab_size=8000, method="kendall")
+# → float in [-1, 1]; higher means more similar BPE structure
+```
+
+### Normalized Compression Distance
+
+```python
+from corpus_helpers.metrics import normalized_compression_distance
+
+ncd = normalized_compression_distance("hello world", "hello there")
+# → float near 0 for similar texts, near 1 for unrelated ones
+# Pass a custom compressor (e.g. bz2.compress) as the third argument.
+```
 
 ---
 
@@ -104,11 +160,3 @@ Available vocab builders: `build_bpe_vocab`, `build_picky_bpe_vocab`, `build_uni
 ## Tokenizers
 
 *TODO*
-
-## Running tests
-
-```bash
-pip install -r requirements.txt
-pip install pytest
-pytest tests/
-```
