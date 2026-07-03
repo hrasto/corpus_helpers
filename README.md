@@ -9,10 +9,6 @@ The packages contains the following modules:
 `readers`
 - functions to load/stream/preprocess normalize text files
 
-`visualize`
-- visualize documents in t-sne, optionally with 'group' annotations
-- visualize/estimate Zipf's law
-
 `domain_distance`
 - text similarity metrics based on various (surface) features
 
@@ -42,7 +38,6 @@ pytest tests/
 
 - [Readers](#readers)
 - [Vocabulary](#vocabulary)
-- [Visualize](#visualize)
 - [Domain distance](#domain-distance)
 - [Partitioning](#partitioning)
 - [Tokenizers](#tokenizers)
@@ -88,12 +83,6 @@ vocab, cutoff = vf.get_vocab(max_size=50000, min_df=2, order_by="df")
 ```
 
 Available vocab builders: `build_bpe_vocab`, `build_picky_bpe_vocab`, `build_unigram_vocab`, `build_morfessor_vocab`.
-
----
-
-## Visualize
-
-*TODO*
 
 ---
 
@@ -153,10 +142,82 @@ ncd = normalized_compression_distance("hello world", "hello there")
 
 ## Partitioning
 
-*TODO*
+`partition.py` provides a pipeline for splitting a text corpus into topically coherent regions. A full walkthrough is in [`notebooks/partition_demo.ipynb`](notebooks/partition_demo.ipynb).
+
+### Typical pipeline
+
+**1. Vectorise and fit a topic model**
+
+```python
+from sklearn.feature_extraction.text import CountVectorizer
+from sklearn.decomposition import LatentDirichletAllocation
+from corpus_helpers import partition
+
+vectorizer = CountVectorizer(min_df=10, max_df=0.8, max_features=10000)
+docs_vect = vectorizer.fit_transform(docs)
+
+model = partition.fit_topic_model(docs_vect, LatentDirichletAllocation, n_components=14, random_state=0)
+```
+
+**2. Cluster documents in topic space**
+
+```python
+docs_latent = model.transform(docs_vect)   # (n_docs, n_topics)
+assign = partition.partition(docs_latent, n_clusters=14, seed=0)
+```
+
+**3. Compute region sizes and iteratively split the largest region**
+
+```python
+file_sizes = [len(d.encode()) for d in docs]   # bytes per document
+
+region_sizes = partition.get_region_sizes(assign, file_sizes)
+# → {region_id: size_in_MB, …}
+
+assign2 = partition.split_largest_region(assign, docs_latent, region_sizes, seed=0)
+# largest region is re-clustered into two; one half keeps the original id,
+# the other gets max(assign)+1
+```
+
+**4. Find the most / least similar subsets of regions**
+
+```python
+lo, hi = partition.make_subsets(assign2, docs_latent, subset_size=3)
+# lo: tuple of region ids with lowest mean pairwise cosine distance (most similar)
+# hi: tuple of region ids with highest mean pairwise cosine distance (most dissimilar)
+```
+
+### Saving and reloading a topic model
+
+```python
+partition.save_topic_model(model, vectorizer, path="./my_model")
+model, vectorizer = partition.load_topic_model("./my_model")
+```
 
 ---
 
 ## Tokenizers
 
-*TODO*
+`tokenizers2.py` provides tokenizer wrappers built on top of [HuggingFace `tokenizers`](https://github.com/huggingface/tokenizers), all operating on byte-level representations. The module is named `tokenizers2` to avoid shadowing the HF library.
+
+All classes share a common interface via `BaseTokenizer`: construct with a text iterable to train immediately, then call `.tokenize(text)` or `.encode(text)` to get a list of token strings.
+
+### Leftmost-longest (maximum matching)
+
+```python
+from corpus_helpers.tokenizers2 import LeftmostLongestTokenizer
+
+tok = LeftmostLongestTokenizer(terms=my_vocab)   # vocab: list/dict of strings
+tok.tokenize("hello world")   # → list of token strings
+```
+
+Greedily picks the longest matching token at each position. Relies on HF's BPE fallback (no merge list), so no training corpus is needed — just supply a vocabulary.
+
+### Wrapping an external tokenizer
+
+```python
+from corpus_helpers.tokenizers2 import AnyTokenizer
+
+tok = AnyTokenizer(my_hf_tokenizer)   # any object with .encode(text).tokens
+tok.tokenize("hello world")
+```
