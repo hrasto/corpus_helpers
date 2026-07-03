@@ -87,7 +87,7 @@ def plot_tsne(coords_2d, color_by, ax=None, **scatter_kwargs):
 
 # --- partitioning ---
 
-def partition(docs_latent, n_clusters, seed=0):
+def partition(docs_latent, n_clusters, seed):
     """KMeans clustering on latent representations. Returns integer assignment array."""
     return KMeans(n_clusters=n_clusters, random_state=seed).fit_predict(docs_latent)
 
@@ -109,7 +109,7 @@ def get_region_sizes(assign, file_sizes):
     return regions
 
 
-def split_largest_region(assign, docs_latent, region_sizes, seed=0):
+def split_largest_region(assign, docs_latent, region_sizes, seed):
     """
     Split the largest region (by size) into two with KMeans(n_clusters=2).
     One half keeps the original region id; the other gets max(assign)+1.

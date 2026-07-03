@@ -26,4 +26,5 @@ htmlcov/
 # OS
 .DS_Store
 
-.pkl
+*.pkl
+.claude/
