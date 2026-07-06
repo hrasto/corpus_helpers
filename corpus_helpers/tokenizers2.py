@@ -80,8 +80,17 @@ class BaseTokenizer(ABC):
     def tokenize_batch(self, texts: Iterable[str]) -> list[list[str]]:
         return self.encode_batch(texts)
     
-    def is_trained(self): 
+    def is_trained(self):
         return self.tokenizer is not None
+
+    def measure_bpt(self, corpus: Iterable[bytes]) -> float:
+        """Mean bytes-per-token over corpus."""
+        total_bytes = 0
+        total_tokens = 0
+        for doc in corpus:
+            total_bytes += len(doc)
+            total_tokens += len(self.tokenize(doc.decode("utf-8", errors="replace")))
+        return total_bytes / total_tokens if total_tokens > 0 else float("nan")
 
 class AnyTokenizer(BaseTokenizer): 
     """ not sure if this is useful but this just takes an 'external' tokenizer object that has a tokenize member function and calls it instead of using its own implementation """
@@ -136,10 +145,48 @@ class BPETokenizer(BaseTokenizer):
         bpe.train_from_iterator(texts, trainer)
         self.tokenizer = bpe
 
-    def tokenize(self, text):
+    def encode(self, text):
         return self.tokenizer.encode(text).tokens
 
-class UnigramTokenizer(BaseTokenizer): 
+class BPEFromMerges(BaseTokenizer):
+    """BPE tokenizer constructed from a pre-existing merge list.
+
+    The vocab dict is maintained incrementally in Python, so extend() only
+    processes the new merges rather than rebuilding from scratch. The underlying
+    HF Tokenizer object is recreated on each extend() call (HF has no public
+    add-merge API), but that cost is proportional to the total merge count and
+    unavoidable.
+    """
+
+    def __init__(self, merges: list[tuple[str, str]] = (), byte_level: bool = True):
+        self.byte_level = byte_level
+        alphabet = sorted(ByteLevel.alphabet())
+        self._vocab: dict[str, int] = {c: i for i, c in enumerate(alphabet)}
+        self._merges: list[tuple[str, str]] = []
+        super().__init__(None, len(self._vocab), dont_train=True)
+        if merges:
+            self.extend(list(merges))
+
+    def train(self, texts, **kwargs) -> None:
+        pass
+
+    def extend(self, new_merges: list[tuple[str, str]]) -> None:
+        """Add merges and rebuild the HF tokenizer. O(new_merges) Python-side work."""
+        for a, b in new_merges:
+            merged = a + b
+            if merged not in self._vocab:
+                self._vocab[merged] = len(self._vocab)
+            self._merges.append((a, b))
+        self.vocab_size = len(self._vocab)
+        self.tokenizer = Tokenizer(BPE(vocab=self._vocab, merges=self._merges))
+
+    def encode(self, text: str) -> list[str]:
+        if self.byte_level:
+            text = to_bytelevel(text)
+        return self.tokenizer.encode(text).tokens
+
+
+class UnigramTokenizer(BaseTokenizer):
     def __init__(self, texts, vocab_size, byte_level=True, dont_train=False, **kwargs):
         self.byte_level=byte_level
         super().__init__(texts, vocab_size, dont_train, **kwargs)
@@ -155,5 +202,5 @@ class UnigramTokenizer(BaseTokenizer):
         uni.train_from_iterator(texts, trainer)
         self.tokenizer = uni
 
-    def tokenize(self, text):
+    def encode(self, text):
         return self.tokenizer.encode(text).tokens

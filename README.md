@@ -89,34 +89,47 @@ Available vocab builders: `build_bpe_vocab`, `build_picky_bpe_vocab`, `build_uni
 ## Domain distance
 
 `metrics.py` provides surface-level distance metrics between two text corpora.
-Each corpus is an iterable of strings (documents or lines).
+Each corpus is an **iterable of `bytes`** objects (documents or lines), e.g. `[line.encode() for line in open(f)]`.
 
-### Lexical metrics
+### N-gram overlap and divergence
+
+```python
+from corpus_helpers.metrics import ngram_overlap, ngram_divergence
+
+a = [b"the cat sat on the mat", b"a quick brown fox"]
+b = [b"the dog lay on the rug", b"a lazy brown dog"]
+
+# Jaccard overlap of n-gram vocabularies (0 = disjoint, 1 = identical)
+ngram_overlap(a, b)                          # word unigrams (default)
+ngram_overlap(a, b, n=2, unit="char")        # character bigrams
+
+# Jensen-Shannon divergence between n-gram frequency distributions (0 = identical)
+ngram_divergence(a, b)                       # word unigrams, JSD
+ngram_divergence(a, b, method="kl")          # KL divergence (asymmetric)
+ngram_divergence(a, b, n=3, unit="char")     # character trigrams
+ngram_divergence(a, b, smoothing=0.5)        # custom Laplace smoothing pseudocount
+```
+
+`unit="word"` tokenises on Unicode word boundaries; `unit="char"` splits into individual characters. `smoothing` controls the additive (Laplace) pseudocount added to every vocabulary entry before normalisation (default `1.0`).
+
+### Normalized Compression Distance
 
 ```python
 from corpus_helpers.metrics import (
-    lexical_overlap,
-    lexical_divergence,
-    ngram_counts,
-    ngram_overlap,
-    ngram_divergence,
+    normalized_compression_distance,
+    normalized_compression_distance_asymmetric,
 )
 
-a = ["the cat sat on the mat", "a quick brown fox"]
-b = ["the dog lay on the rug", "a lazy brown dog"]
+# Symmetric NCD — concatenates documents, compresses with zlib
+ncd = normalized_compression_distance(a, b)
+# → float near 0 for similar corpora, near 1 for unrelated ones
+# symmetric=True averages C(ab) and C(ba) to remove order-dependence
+ncd = normalized_compression_distance(a, b, symmetric=True)
+# Pass a custom compressor (e.g. bz2.compress, lzma.compress) as the third argument
 
-# Jaccard overlap of word vocabularies (0 = disjoint, 1 = identical)
-lexical_overlap(a, b)           # → float in [0, 1]
-
-# JSD between word-frequency distributions (0 = identical)
-lexical_divergence(a, b)                     # JSD (default)
-lexical_divergence(a, b, method="kl")        # KL divergence (asymmetric)
-
-# Character trigram overlap / divergence
-c3 = ngram_counts(a, n=3, unit="char")
-d3 = ngram_counts(b, n=3, unit="char")
-ngram_overlap(c3, d3)
-ngram_divergence(c3, d3, method="jsd")
+# Asymmetric NCD — suited for |a| >> |b|
+# Returns (C(ab) − C(a)) / C(b): fraction of b's information not captured in a
+ncd_asym = normalized_compression_distance_asymmetric(a, b)
 ```
 
 ### BPE merge-rank correlation
@@ -125,18 +138,53 @@ ngram_divergence(c3, d3, method="jsd")
 from corpus_helpers.metrics import bpe_merge_rank_correlation
 
 score = bpe_merge_rank_correlation(a, b, vocab_size=8000, method="kendall")
-# → float in [-1, 1]; higher means more similar BPE structure
+# → float in [-1, 1]; higher means more similar BPE merge structure
+# method="spearman" is also available; Kendall's τ is more robust to heavy-tailed rank distributions
 ```
 
-### Normalized Compression Distance
+### BPE overlap
+
+`bpe_overlap` is an **asymmetric** metric that measures how well BPE merge rules learned from corpus `a` compress corpus `b`. It is more sensitive than merge-rank correlation because it evaluates actual tokenisation efficiency rather than rank agreement.
 
 ```python
-from corpus_helpers.metrics import normalized_compression_distance
+from corpus_helpers.metrics import bpe_overlap
 
-ncd = normalized_compression_distance("hello world", "hello there")
-# → float near 0 for similar texts, near 1 for unrelated ones
-# Pass a custom compressor (e.g. bz2.compress) as the third argument.
+result = bpe_overlap(a, b)
+# result["auc"]          — area under the BPT_rel curve ∈ [0, 1]; higher = more overlap
+# result["bpt_skyline"]  — bytes-per-token when BPE is trained *on* b (upper bound for b)
+# result["curve"]        — list of (k, bpt_rel) pairs; bpt_rel=1 means as efficient as skyline
+# result["n_merges"]     — number of merge rules learned from a
 ```
+
+The curve traces BPT_rel(k) as the top-k merge rules from `a` are applied to `b`, with k log-spaced from 1 to `n_merges`. The AUC summarises the whole curve in one number.
+
+Key parameters:
+
+| Parameter | Default | Effect |
+|---|---|---|
+| `min_freq_fract` | `1e-7` | Merge rules with frequency below `min_freq_fract × len(a)` bytes are dropped. Higher = fewer, higher-quality merges; lower = more merges including rare ones. |
+| `k_steps` | `20` | Number of points on the curve (log-spaced). |
+| `vocab_size` | `1_000_000` | Hard cap on the number of merge rules trained. |
+
+`bpe_overlap(a, b)` ≠ `bpe_overlap(b, a)` in general: if `a` has a much larger corpus, its merge table tends to generalise better to `b` than vice versa.
+
+### Sampled distance
+
+`sampled_distance` wraps any corpus-level metric with convergent random sampling, useful when corpora are large and a single full-corpus evaluation would be slow or memory-intensive.
+
+```python
+from corpus_helpers.metrics import sampled_distance, ngram_divergence
+from functools import partial
+
+metric = partial(ngram_divergence, method="jsd")
+result = sampled_distance(a, b, metric, sample_size_per_iteration=100_000, seed=42)
+# result["mean"]         — mean metric value across all iterations
+# result["std"]          — std of the last k values (convergence window)
+# result["n_iterations"] — how many iterations were run
+# result["converged"]    — True if std dropped below threshold before max_iterations
+```
+
+Each iteration draws a random subset of documents whose total byte size is at least `sample_size_per_iteration`, evaluates `metric`, and checks whether the rolling standard deviation of the last `k` values has fallen below `threshold`. Set `return_window=True` to get all per-iteration values in `result["values"]`.
 
 ---
 
@@ -212,6 +260,38 @@ tok.tokenize("hello world")   # → list of token strings
 ```
 
 Greedily picks the longest matching token at each position. Relies on HF's BPE fallback (no merge list), so no training corpus is needed — just supply a vocabulary.
+
+### BPE tokenizer (trained from scratch)
+
+```python
+from corpus_helpers.tokenizers2 import BPETokenizer
+
+tok = BPETokenizer(texts, vocab_size=8000)
+tok.tokenize("hello world")   # → list of token strings
+```
+
+Trains a standard byte-level BPE tokenizer via HuggingFace `tokenizers`. Any keyword arguments accepted by `BpeTrainer` (e.g. `min_frequency`) can be passed through.
+
+### BPE tokenizer from a merge list
+
+`BPEFromMerges` constructs a BPE tokenizer from a pre-existing list of merge rules, and supports incremental extension without retraining.
+
+```python
+from corpus_helpers.tokenizers2 import BPEFromMerges
+
+merges = [("h", "e"), ("he", "l"), ...]   # list of (str, str) pairs
+
+tok = BPEFromMerges(merges)
+tok.tokenize("hello")              # → list of token strings
+
+# Extend incrementally — only processes the new merges
+tok.extend([("hel", "lo")])
+
+# Measure mean bytes-per-token over a corpus (list[bytes])
+bpt = tok.measure_bpt(corpus)     # → float
+```
+
+The internal vocab is maintained incrementally in Python, so `extend()` is O(new merges). The underlying HF `Tokenizer` object is rebuilt on each `extend()` call (HF has no public add-merge API), but that cost is unavoidable. This class is used internally by `bpe_overlap` to sweep k values efficiently.
 
 ### Wrapping an external tokenizer
 

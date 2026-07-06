@@ -16,7 +16,7 @@ import re
 import zlib
 from collections import Counter
 from typing import Callable, Iterable, Literal
-from .tokenizers2 import BPETokenizer
+from .tokenizers2 import BPETokenizer, BPEFromMerges
 import numpy as np
 
 Unit = Literal["char", "word"]
@@ -117,7 +117,8 @@ def _get_bpe_merges(corpus: Iterable[str], vocab_size: int, **trainer_kwargs) ->
     """Train a BPE tokenizer on `corpus` and return its ordered merge list."""
     tokenizer = BPETokenizer(corpus, vocab_size=vocab_size, **trainer_kwargs).tokenizer
     merges = json.loads(tokenizer.to_str())["model"]["merges"]
-    return [tuple(m.split(" ", 1)) for m in merges]
+    # return [tuple(m.split(" ", 1)) for m in merges]
+    return merges
 
 
 def bpe_merge_rank_correlation(
@@ -170,6 +171,84 @@ def bpe_merge_rank_correlation(
     return float(stat)
 
 
+def bpe_overlap(
+    corpus_a: Iterable[bytes],
+    corpus_b: Iterable[bytes],
+    *,
+    vocab_size: int = 1_000_000,
+    min_freq_fract: float = 1e-7,
+    k_steps: int = 20,
+    **kwargs,
+) -> dict:
+    """Asymmetric BPE-coverage metric: how well corpus_a's merge rules compress corpus_b.
+
+    1. Train a long BPE merge list on corpus_a, stopping when merge frequency falls
+       below min_freq_fract * total_bytes_a.
+    2. At k_steps log-spaced values of k, build a tokenizer with the top-k merges,
+       tokenize corpus_b, and record bytes-per-token (BPT).
+    3. Train BPE on corpus_b itself and measure the skyline BPT on corpus_b.
+    4. Normalize: BPT_rel(k) = (BPT(k) - 1) / (BPT_skyline - 1), so 0 means no
+       compression gain beyond single-byte tokens and 1 means as efficient as training
+       on b itself.
+    5. Compute AUC of BPT_rel over k/max_k in [0, 1].
+
+    Returns a dict with:
+        auc         — area under the BPT_rel curve (higher = more domain overlap)
+        bpt_skyline — BPT of a tokenizer trained and evaluated on corpus_b
+        curve       — list of (k, bpt_rel) pairs
+        n_merges    — number of merges learned from corpus_a
+    """
+    docs_a = list(corpus_a)
+    docs_b = list(corpus_b)
+    if not docs_a or not docs_b:
+        raise ValueError("both corpora must be non-empty")
+
+    str_a = [doc.decode("utf-8", errors="replace") for doc in docs_a]
+
+    size_a = sum(len(doc) for doc in docs_a)
+    min_freq = max(1, int(size_a * min_freq_fract))
+    merges_a = _get_bpe_merges(str_a, vocab_size=vocab_size, min_frequency=min_freq, **kwargs)
+    max_k = len(merges_a)
+    if max_k == 0:
+        raise ValueError("no BPE merges learned from corpus_a; try a smaller min_freq_fract")
+
+    # Log-spaced k schedule from 1 to max_k
+    k_values = list(map(int, np.unique(np.geomspace(1, max_k, k_steps).round().astype(int))))
+    if k_values[-1] != max_k:
+        k_values.append(max_k)
+
+    # Sweep k incrementally: extend() only processes the delta on the Python side
+    tok = BPEFromMerges()
+    prev_k = 0
+    curve_k, curve_bpt = [], []
+    for k in k_values:
+        tok.extend(merges_a[prev_k:k])
+        curve_k.append(k)
+        curve_bpt.append(tok.measure_bpt(docs_b))
+        prev_k = k
+
+    # Skyline: BPE trained and evaluated on corpus_b
+    size_b = sum(len(doc) for doc in docs_b)
+    min_freq_b = max(1, int(size_b * min_freq_fract))
+    str_b = [doc.decode("utf-8", errors="replace") for doc in docs_b]
+    merges_b = _get_bpe_merges(str_b, vocab_size=vocab_size, min_frequency=min_freq_b, **kwargs)
+    bpt_skyline = BPEFromMerges(merges_b).measure_bpt(docs_b)
+
+    denom = bpt_skyline - 1.0
+    if denom <= 0:
+        raise ValueError(f"bpt_skyline={bpt_skyline:.3f} <= 1.0; corpus_b may be too small to train BPE")
+
+    bpt_rel = [(bpt - 1.0) / denom for bpt in curve_bpt]
+    k_norm = [k / max_k for k in curve_k]
+    auc = float(np.trapezoid(bpt_rel, k_norm))
+
+    return {
+        "auc": auc,
+        "bpt_skyline": bpt_skyline,
+        "curve": list(zip(curve_k, bpt_rel)),
+        "n_merges": max_k,
+    }
+
 def normalized_compression_distance(
     corpus_a: Iterable[bytes],
     corpus_b: Iterable[bytes],
@@ -212,9 +291,6 @@ def normalized_compression_distance(
         c_ab = len(compress(a + b_))
 
     return (c_ab - min(c_a, c_b)) / max(c_a, c_b)
-
-
-# def bpe_overlap(corpus_a, corpus_b, )
 
 
 def normalized_compression_distance_asymmetric(
