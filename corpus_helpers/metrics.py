@@ -141,10 +141,10 @@ def bpe_merge_rank_correlation(
     """
     from scipy.stats import kendalltau, spearmanr
 
-    merges_a = _train_bpe(
+    merges_a = _get_bpe_merges(
         (doc.decode("utf-8", errors="replace") for doc in corpus_a), vocab_size
     )
-    merges_b = _train_bpe(
+    merges_b = _get_bpe_merges(
         (doc.decode("utf-8", errors="replace") for doc in corpus_b), vocab_size
     )
 
@@ -171,13 +171,15 @@ def bpe_merge_rank_correlation(
 
 
 def normalized_compression_distance(
-    doc_a: bytes,
-    doc_b: bytes,
+    corpus_a: Iterable[bytes],
+    corpus_b: Iterable[bytes],
     compressor: Callable[[bytes], bytes] | None = None,
     *,
     symmetric: bool = False,
 ) -> float:
     """NCD(a, b) = (C(ab) - min(C(a), C(b))) / max(C(a), C(b))
+
+    Documents in each corpus are concatenated before compression.
 
     Uses zlib by default; pass a different `compressor` (e.g. bz2.compress,
     lzma.compress) to compare under a different compression scheme.
@@ -186,55 +188,66 @@ def normalized_compression_distance(
     removing the order-dependence of concatenation.  This adds one extra
     compression call but produces a true metric.
 
-    Note: result is not strictly bounded to [0, 1]; for very short texts the
+    Note: result is not strictly bounded to [0, 1]; for very short inputs the
     compressor's fixed overhead can push it above 1.0.
     """
-    if len(doc_a) < _NCD_SHORT_TEXT_THRESHOLD or len(doc_b) < _NCD_SHORT_TEXT_THRESHOLD:
+    a = b"".join(corpus_a)
+    b_ = b"".join(corpus_b)
+
+    if len(a) < _NCD_SHORT_TEXT_THRESHOLD or len(b_) < _NCD_SHORT_TEXT_THRESHOLD:
         _log.warning(
             "NCD inputs are short (%d, %d bytes); compressor overhead may push "
             "the result above 1.0 and reduce reliability.",
-            len(doc_a),
-            len(doc_b),
+            len(a),
+            len(b_),
         )
 
     compress = compressor or zlib.compress
 
-    c_a = len(compress(doc_a))
-    c_b = len(compress(doc_b))
+    c_a = len(compress(a))
+    c_b = len(compress(b_))
     if symmetric:
-        c_ab = (len(compress(doc_a + doc_b)) + len(compress(doc_b + doc_a))) / 2
+        c_ab = (len(compress(a + b_)) + len(compress(b_ + a))) / 2
     else:
-        c_ab = len(compress(doc_a + doc_b))
+        c_ab = len(compress(a + b_))
 
     return (c_ab - min(c_a, c_b)) / max(c_a, c_b)
 
 
+# def bpe_overlap(corpus_a, corpus_b, )
+
+
 def normalized_compression_distance_asymmetric(
-    doc_a: bytes,
-    doc_b: bytes,
+    corpus_a: Iterable[bytes],
+    corpus_b: Iterable[bytes],
     compressor: Callable[[bytes], bytes] | None = None,
 ) -> float:
     """Asymmetric NCD suited for the case where |a| >> |b|.
 
+    Documents in each corpus are concatenated before compression.
+
     Returns (C(ab) - C(a)) / C(b): the fraction of b's information that is
     not already captured in a, normalised by b's own complexity.  Useful when
-    a is a large reference text and b is a short query document; in that
-    regime the standard symmetric NCD is dominated by a's size.
+    a is a large reference corpus and b is a small query set; in that regime
+    the standard symmetric NCD is dominated by a's size.
 
     Interpretation: values near 0 mean b is well-predicted by a; values near
     (or above) 1 mean b contains information largely absent from a.
     """
-    if len(doc_b) < _NCD_SHORT_TEXT_THRESHOLD:
+    a = b"".join(corpus_a)
+    b_ = b"".join(corpus_b)
+
+    if len(b_) < _NCD_SHORT_TEXT_THRESHOLD:
         _log.warning(
-            "Asymmetric NCD: doc_b is short (%d bytes); C(b) is dominated by "
+            "Asymmetric NCD: corpus_b is short (%d bytes); C(b) is dominated by "
             "compressor overhead and the result may be unreliable.",
-            len(doc_b),
+            len(b_),
         )
 
     compress = compressor or zlib.compress
-    c_a = len(compress(doc_a))
-    c_b = len(compress(doc_b))
-    c_ab = len(compress(doc_a + doc_b))
+    c_a = len(compress(a))
+    c_b = len(compress(b_))
+    c_ab = len(compress(a + b_))
     return (c_ab - c_a) / c_b
 
 # ---- wrapper for sampled variants of the distance metrics --------------------
@@ -319,3 +332,4 @@ def sampled_distance(
     if return_window:
         result["values"] = list(values)
     return result
+
