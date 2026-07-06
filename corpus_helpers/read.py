@@ -26,15 +26,16 @@ def divide(texts, divide_fn):
             yield chunk
 
 def split_by(texts, pattern):
-    return divide(texts, lambda text: re.split(pattern, text))
+    return divide(texts, lambda text: re.split(pattern, text, flags=re.UNICODE))
 
+# split_word = partial(split_by, pattern=r"[^\W\d_]+|\d+|[^\w\s]+")
 split_word = partial(split_by, pattern=r"(\W)")
 split_line = partial(split_by, pattern="(\n)")
 split_pipe = partial(split_by, pattern="(\\|)")
 
-def as_bytes(texts):
+def as_bytes(texts, encoding='utf-8', errors='replace'):
     for text in texts:
-        yield text.encode()
+        yield text.encode(encoding=encoding, errors=errors)
 
 def append(texts, is_appendable=lambda s: not str.isalpha(s) and len(s)==1):
     buffer = next(texts)
@@ -62,12 +63,18 @@ class _RestartableChain:
     def __init__(self, texts, preprocessors):
         self.texts = texts
         self.preprocessors = preprocessors
+        self.length = None
 
     def __iter__(self):
         gen = copy(self.texts)
         for pp in self.preprocessors:
             gen = pp(gen)
         return gen
+    
+    def __len__(self):
+        if self.length is None: 
+            self.length = sum(1 for _ in self)
+        return self.length
 
 
 class _RestartableReader:

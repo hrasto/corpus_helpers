@@ -1,8 +1,7 @@
 """Domain-distance metrics between two text corpora.
 
-Each corpus is represented as an iterable of byte strings (documents/lines).
-Metrics operate on frequency distributions derived from those documents, either
-at the lexical (whitespace-token) level or the n-gram (character or word) level.
+Each corpus is represented as an iterable of byte strings.
+Important: assumes corpora are pre-tokenized at the word level.
 
 BPE metrics additionally require the `tokenizers` package (HuggingFace).
 """
@@ -17,6 +16,7 @@ import zlib
 from collections import Counter
 from typing import Callable, Iterable, Literal
 from .tokenizers2 import BPETokenizer, BPEFromMerges
+from .read import lower, split_word, split_line, delete_blank, delete_newline, chain_preprocessors
 import numpy as np
 
 Unit = Literal["char", "word"]
@@ -25,32 +25,37 @@ _log = logging.getLogger(__name__)
 
 # Texts shorter than this (in bytes) may produce unreliable NCD values
 # because the compressor's fixed-overhead bytes dominate the compressed size.
-_NCD_SHORT_TEXT_THRESHOLD = 50
+_NCD_SHORT_TEXT_THRESHOLD = 100
 
 # letters | digit runs | punctuation/symbols — never mixes categories across boundaries
-_WORD_RE = re.compile(r"[^\W\d_]+|\d+|[^\w\s]+", re.UNICODE)
+# _WORD_RE = re.compile(r"[^\W\d_]+|\d+|[^\w\s]+", re.UNICODE)
 
 
-def _word_tokenize(text: str) -> list[str]:
-    return _WORD_RE.findall(text)
+# def _word_tokenize(text: str) -> list[str]:
+    # return _WORD_RE.findall(text)
 
 
 def _ngrams(tokens: list[str], n: int) -> Iterable[tuple[str, ...]]:
-    for i in range(len(tokens) - n + 1):
-        yield tuple(tokens[i : i + n])
-
+    """ "everygrams" up to n """
+    for k in range(1, n + 1):
+        for i in range(len(tokens) - k + 1):
+            yield tuple(tokens[i : i + k])
 
 def _ngram_counts(corpus: Iterable[bytes], n: int = 1, unit: Unit = "word") -> Counter:
-    """Count n-grams over a corpus of documents.
+    """Count n-grams over a corpus of documents. Decodes corpus into utf-8. Note: word-mode simply takes items of corpus as words, char mode the (decoded) elements after calling list() on every item of corpus. 
 
     unit="char" splits each document into characters before forming n-grams;
     unit="word" splits on whitespace.
     """
     counts: Counter = Counter()
-    for doc in corpus:
-        text = doc.decode("utf-8", errors="replace")
-        tokens = list(text) if unit == "char" else _word_tokenize(text)
+    if unit == 'char': 
+        for doc in corpus: 
+            tokens = list(doc.decode("utf-8", errors="replace"))
+            counts.update(_ngrams(tokens, n))
+    elif unit == 'word': 
+        tokens = [word.decode("utf-8", errors="replace") for word in corpus]
         counts.update(_ngrams(tokens, n))
+    
     return counts
 
 
@@ -80,7 +85,7 @@ def ngram_overlap(
 def ngram_divergence(
     corpus_a: Iterable[bytes],
     corpus_b: Iterable[bytes],
-    method: Literal["jsd", "kl"] = "jsd",
+    method: Literal["jsd", "kld"] = "jsd",
     smoothing: float = 1.0,
     n: int = 1,
     unit: Unit = "word",
@@ -103,7 +108,7 @@ def ngram_divergence(
     p = np.array([(counts_a.get(k, 0) + smoothing) / total_a for k in vocab])
     q = np.array([(counts_b.get(k, 0) + smoothing) / total_b for k in vocab])
 
-    if method == "kl":
+    if method == "kld":
         return float(np.sum(p * np.log(p / q)))
     if method == "jsd":
         m = 0.5 * (p + q)
@@ -178,6 +183,7 @@ def bpe_overlap(
     vocab_size: int = 1_000_000,
     min_freq_fract: float = 1e-7,
     k_steps: int = 20,
+    return_dict=False, 
     **kwargs,
 ) -> dict:
     """Asymmetric BPE-coverage metric: how well corpus_a's merge rules compress corpus_b.
@@ -242,12 +248,14 @@ def bpe_overlap(
     k_norm = [k / max_k for k in curve_k]
     auc = float(np.trapezoid(bpt_rel, k_norm))
 
-    return {
-        "auc": auc,
-        "bpt_skyline": bpt_skyline,
-        "curve": list(zip(curve_k, bpt_rel)),
-        "n_merges": max_k,
-    }
+    if return_dict: 
+        return {
+            "auc": auc,
+            "bpt_skyline": bpt_skyline,
+            "curve": list(zip(curve_k, bpt_rel)),
+            "n_merges": max_k,
+        }
+    return auc
 
 def normalized_compression_distance(
     corpus_a: Iterable[bytes],
