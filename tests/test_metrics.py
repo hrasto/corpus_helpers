@@ -10,7 +10,7 @@ from corpus_helpers.metrics import (
     corpus_ncd,
     lexical_divergence,
     lexical_overlap,
-    ngram_counts,
+    _ngram_counts,
     ngram_divergence,
     ngram_overlap,
     normalized_compression_distance,
@@ -24,30 +24,30 @@ from corpus_helpers.metrics import (
 
 
 def test_ngram_counts_word_unigrams():
-    counts = ngram_counts(["hello world", "hello"], n=1, unit="word")
+    counts = _ngram_counts(["hello world", "hello"], n=1, unit="word")
     assert counts[("hello",)] == 2
     assert counts[("world",)] == 1
 
 
 def test_ngram_counts_char_bigrams():
-    counts = ngram_counts(["ab"], n=2, unit="char")
+    counts = _ngram_counts(["ab"], n=2, unit="char")
     assert counts[("a", "b")] == 1
     assert len(counts) == 1
 
 
 def test_ngram_counts_bigrams_word():
-    counts = ngram_counts(["a b c"], n=2, unit="word")
+    counts = _ngram_counts(["a b c"], n=2, unit="word")
     assert counts[("a", "b")] == 1
     assert counts[("b", "c")] == 1
 
 
 def test_ngram_counts_empty_corpus():
-    counts = ngram_counts([], n=1, unit="word")
+    counts = _ngram_counts([], n=1, unit="word")
     assert len(counts) == 0
 
 
 def test_ngram_counts_empty_document():
-    counts = ngram_counts([""], n=1, unit="word")
+    counts = _ngram_counts([""], n=1, unit="word")
     assert len(counts) == 0
 
 
