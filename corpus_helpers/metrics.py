@@ -361,28 +361,35 @@ def sampled_distance(
     max_iterations: int = 1000,
     return_window: bool = False,
     seed: int | None = None,
+    show_progress: bool = False,
 ) -> dict:
     """Estimate a corpus-level metric via convergent random sampling.
 
     Each iteration draws a random subset of documents from each corpus whose
     total byte size is at least `sample_size_per_iteration`, then evaluates
     `metric` on the two subsets.  Stops when the rolling standard deviation of
-    the last `k` values drops below `threshold`, or after `max_iterations`.
+    the last `k` cumulative-mean estimates drops below `threshold`, or after
+    `max_iterations`.
+
+    Convergence is tested on running cumulative means rather than raw sample
+    values: std(cumulative_means[-k:]) measures how much the overall estimate
+    is still shifting as evidence accumulates, not how noisy individual samples
+    are.
 
     Args:
         corpus_a, corpus_b:        iterables of byte strings (materialised internally).
         metric:                    callable (sample_a, sample_b) -> float, where each
                                    sample is a list[bytes].
         sample_size_per_iteration: target cumulative byte size of each per-corpus sample.
-        k:                         rolling window size for convergence testing.
-        threshold:                 stop when std(last k values) < threshold.
+        k:                         window size for convergence testing (last k cumulative means).
+        threshold:                 stop when std(last k cumulative means) < threshold.
         max_iterations:            hard upper bound on iterations.
         return_window:             if True, include all iteration values in the result.
         seed:                      RNG seed for reproducibility.
 
     Returns a dict with:
         mean          — mean metric value over all iterations
-        std           — std of the last k values (the convergence window)
+        std           — std of the last k cumulative-mean estimates (the convergence window)
         n_iterations  — total number of iterations run
         converged     — True if the std threshold was reached before max_iterations
         values        — all iteration values (only present when return_window=True)
@@ -394,22 +401,39 @@ def sampled_distance(
         raise ValueError("both corpora must be non-empty")
 
     values: list[float] = []
+    cumulative_means: list[float] = []
     converged = False
+
+    if show_progress:
+        from tqdm.auto import tqdm
+        pbar = tqdm(total=max_iterations, desc="sampled_distance", leave=False)
+    else:
+        pbar = None
 
     for _ in range(max_iterations):
         sample_a = _sample_to_size(docs_a, sample_size_per_iteration, rng)
         sample_b = _sample_to_size(docs_b, sample_size_per_iteration, rng)
         values.append(metric(sample_a, sample_b))
-        if len(values) >= k:
-            window_std = float(np.std(values[-k:], ddof=1))
+        cumulative_means.append(float(np.mean(values)))
+        if len(cumulative_means) >= k:
+            window_std = float(np.std(cumulative_means[-k:], ddof=1))
+            if pbar is not None:
+                pbar.set_postfix(std=f"{window_std:.4f}")
             if window_std < threshold:
                 converged = True
+                if pbar is not None:
+                    pbar.update(1)
                 break
+        if pbar is not None:
+            pbar.update(1)
 
-    window = values[-k:] if len(values) >= k else values
+    if pbar is not None:
+        pbar.close()
+
+    cm_window = cumulative_means[-k:] if len(cumulative_means) >= k else cumulative_means
     result = {
-        "mean": float(np.mean(values)),
-        "std": float(np.std(window, ddof=1)) if len(window) > 1 else float("nan"),
+        "mean": cumulative_means[-1],
+        "std": float(np.std(cm_window, ddof=1)) if len(cm_window) > 1 else float("nan"),
         "n_iterations": len(values),
         "converged": converged,
     }
