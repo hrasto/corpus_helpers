@@ -1,46 +1,45 @@
-# corpus_helpers
+# Corpus helpers
 
 This repo contains various functions that should be helpful for work on text corpora. 
 
-**Overview**
+## Overview
 
-The packages contains the following modules: 
+| Section | Module | Description |
+|---|---|---|
+| [Readers](#readers) | `corpus_helpers.read` | Load, stream, and preprocess text files |
+| [Vocabulary](#vocabulary) | `corpus_helpers.vocab` | Vocabulary construction (BPE, unigram, SentencePiece, Morfessor, …) and group-frequency filtering |
+| [Domain distance](#domain-distance) | `corpus_helpers.metrics` | Text similarity metrics based on surface features |
+| [Partitioning](#partitioning) | `corpus_helpers.partition` | Partition a corpus into topically coherent regions (topic model + clustering); testing degradation in a metric space (using either a topic model or metrics from `corpus_helpers.metrics`) |
+| [Tokenizers](#tokenizers) | `corpus_helpers.tokenizers2` | HuggingFace tokenizer wrappers for fast leftmost-longest segmentation (can be used together with `corpus_helpers.vocab`) |
 
-`readers`
-- functions to load/stream/preprocess normalize text files
+## Getting started
 
-`domain_distance`
-- text similarity metrics based on various (surface) features
+To install and use, run: 
 
-`partitioning`
-- to partition a text corpus into regions which contain similar documents
-- degradation testing
+```
+pip install git+https://github.com/hrasto/corpus_helpers
+```
 
-`tokenizers`
-- wrappers around huggingface tokenizers to provide fast leftmost-longest segmentation
-- potentially could also include graphical segmentation
-
-`vocabulary`
-- functions for vocabulary construction (bpe, unigram, pickybpe, sentencepiece, wordpiece, morfessor, etc.)
-- group-frequency filtering
-
-**Installing dependencies/Running tests**
+To experiment with the package, clone/fork the repo
 
 ```bash
+git clone git@github.com:hrasto/corpus_helpers.git
+cd corpus_helpers
+```
+
+then install dependencies in your virtual environment
+```
 pip install -r requirements.txt
+```
+
+and run tests
+
+```
 pip install pytest
 pytest tests/
 ```
 
----
-
-**Table of contents**
-
-- [Readers](#readers)
-- [Vocabulary](#vocabulary)
-- [Domain distance](#domain-distance)
-- [Partitioning](#partitioning)
-- [Tokenizers](#tokenizers)
+or explore notebooks in `notebooks/`.
 
 ---
 
