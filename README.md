@@ -89,15 +89,15 @@ Available vocab builders: `build_bpe_vocab`, `build_picky_bpe_vocab`, `build_uni
 ## Domain distance
 
 `metrics.py` provides surface-level distance metrics between two text corpora.
-Each corpus is an **iterable of `bytes`** objects (documents or lines), e.g. `[line.encode() for line in open(f)]`.
+Each corpus is an **iterable of `str`**.
 
 ### N-gram overlap and divergence
 
 ```python
 from corpus_helpers.metrics import ngram_overlap, ngram_divergence
 
-a = [b"the cat sat on the mat", b"a quick brown fox"]
-b = [b"the dog lay on the rug", b"a lazy brown dog"]
+a = ["the cat sat on the mat", "a quick brown fox"]
+b = ["the dog lay on the rug", "a lazy brown dog"]
 
 # Jaccard overlap of n-gram vocabularies (0 = disjoint, 1 = identical)
 ngram_overlap(a, b)                          # word unigrams (default)
@@ -105,7 +105,7 @@ ngram_overlap(a, b, n=2, unit="char")        # character bigrams
 
 # Jensen-Shannon divergence between n-gram frequency distributions (0 = identical)
 ngram_divergence(a, b)                       # word unigrams, JSD
-ngram_divergence(a, b, method="kl")          # KL divergence (asymmetric)
+ngram_divergence(a, b, method="kld")         # KL divergence (asymmetric)
 ngram_divergence(a, b, n=3, unit="char")     # character trigrams
 ngram_divergence(a, b, smoothing=0.5)        # custom Laplace smoothing pseudocount
 ```
@@ -132,22 +132,15 @@ ncd = normalized_compression_distance(a, b, symmetric=True)
 ncd_asym = normalized_compression_distance_asymmetric(a, b)
 ```
 
-### BPE merge-rank correlation
-
-```python
-from corpus_helpers.metrics import bpe_merge_rank_correlation
-
-score = bpe_merge_rank_correlation(a, b, vocab_size=8000, method="kendall")
-# → float in [-1, 1]; higher means more similar BPE merge structure
-# method="spearman" is also available; Kendall's τ is more robust to heavy-tailed rank distributions
-```
-
 ### BPE overlap
 
-`bpe_overlap` is an **asymmetric** metric that measures how well BPE merge rules learned from corpus `a` compress corpus `b`. It is more sensitive than merge-rank correlation because it evaluates actual tokenisation efficiency rather than rank agreement.
+`bpe_overlap` is an **asymmetric** metric that measures how well BPE merge rules learned from corpus `a` compress corpus `b`. It evaluates actual tokenisation efficiency.
 
 ```python
 from corpus_helpers.metrics import bpe_overlap
+
+a = ["the cat sat on the mat", "a quick brown fox"]   # list[str]
+b = ["the dog lay on the rug", "a lazy brown dog"]
 
 result = bpe_overlap(a, b)
 # result["auc"]          — area under the BPT_rel curve ∈ [0, 1]; higher = more overlap
@@ -177,14 +170,19 @@ from corpus_helpers.metrics import sampled_distance, ngram_divergence
 from functools import partial
 
 metric = partial(ngram_divergence, method="jsd")
-result = sampled_distance(a, b, metric, sample_size_per_iteration=100_000, seed=42)
+
+# Returns a float by default
+mean = sampled_distance(a, b, metric, sample_size_per_iteration=100_000, seed=42)
+
+# Pass return_dict=True for full diagnostics
+result = sampled_distance(a, b, metric, sample_size_per_iteration=100_000, seed=42, return_dict=True)
 # result["mean"]         — mean metric value across all iterations
-# result["std"]          — std of the last k values (convergence window)
+# result["std"]          — std of the last k cumulative-mean estimates (convergence window)
 # result["n_iterations"] — how many iterations were run
 # result["converged"]    — True if std dropped below threshold before max_iterations
 ```
 
-Each iteration draws a random subset of documents whose total byte size is at least `sample_size_per_iteration`, evaluates `metric`, and checks whether the rolling standard deviation of the last `k` values has fallen below `threshold`. Set `return_window=True` to get all per-iteration values in `result["values"]`.
+Each iteration draws a random subset of documents whose total byte size is at least `sample_size_per_iteration`, evaluates `metric`, and checks whether the rolling standard deviation of the last `k` cumulative-mean estimates has fallen below `threshold`.
 
 ---
 
@@ -248,7 +246,7 @@ model, vectorizer = partition.load_topic_model("./my_model")
 
 `tokenizers2.py` provides tokenizer wrappers built on top of [HuggingFace `tokenizers`](https://github.com/huggingface/tokenizers), all operating on byte-level representations. The module is named `tokenizers2` to avoid shadowing the HF library.
 
-All classes share a common interface via `BaseTokenizer`: construct with a text iterable to train immediately, then call `.tokenize(text)` or `.encode(text)` to get a list of token strings.
+All classes share a common interface via `BaseTokenizer`: construct with a text iterable to train immediately, then call `.encode_str(text)` to get a list of token strings in the byte-level character set. Use `.decode_str(tokens)` to convert back to a plain string.
 
 ### Leftmost-longest (maximum matching)
 
@@ -256,7 +254,7 @@ All classes share a common interface via `BaseTokenizer`: construct with a text 
 from corpus_helpers.tokenizers2 import LeftmostLongestTokenizer
 
 tok = LeftmostLongestTokenizer(terms=my_vocab)   # vocab: list/dict of strings
-tok.tokenize("hello world")   # → list of token strings
+tok.encode_str("hello world")   # → list of token strings (byte-level char set)
 ```
 
 Greedily picks the longest matching token at each position. Relies on HF's BPE fallback (no merge list), so no training corpus is needed — just supply a vocabulary.
@@ -267,7 +265,7 @@ Greedily picks the longest matching token at each position. Relies on HF's BPE f
 from corpus_helpers.tokenizers2 import BPETokenizer
 
 tok = BPETokenizer(texts, vocab_size=8000)
-tok.tokenize("hello world")   # → list of token strings
+tok.encode_str("hello world")   # → list of token strings (byte-level char set)
 ```
 
 Trains a standard byte-level BPE tokenizer via HuggingFace `tokenizers`. Any keyword arguments accepted by `BpeTrainer` (e.g. `min_frequency`) can be passed through.
@@ -282,12 +280,12 @@ from corpus_helpers.tokenizers2 import BPEFromMerges
 merges = [("h", "e"), ("he", "l"), ...]   # list of (str, str) pairs
 
 tok = BPEFromMerges(merges)
-tok.tokenize("hello")              # → list of token strings
+tok.encode_str("hello")            # → list of token strings (byte-level char set)
 
 # Extend incrementally — only processes the new merges
 tok.extend([("hel", "lo")])
 
-# Measure mean bytes-per-token over a corpus (list[bytes])
+# Measure mean bytes-per-token over a corpus (list[str])
 bpt = tok.measure_bpt(corpus)     # → float
 ```
 
@@ -299,5 +297,5 @@ The internal vocab is maintained incrementally in Python, so `extend()` is O(new
 from corpus_helpers.tokenizers2 import AnyTokenizer
 
 tok = AnyTokenizer(my_hf_tokenizer)   # any object with .encode(text).tokens
-tok.tokenize("hello world")
+tok.encode_str("hello world")
 ```

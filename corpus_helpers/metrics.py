@@ -41,22 +41,19 @@ def _ngrams(tokens: list[str], n: int) -> Iterable[tuple[str, ...]]:
         for i in range(len(tokens) - k + 1):
             yield tuple(tokens[i : i + k])
 
-def _ngram_counts(corpus: Iterable[bytes], n: int = 1, unit: Unit = "word") -> Counter:
+def _ngram_counts(corpus: Iterable[str], n: int = 1, unit: Unit = "word") -> Counter:
     """Count n-grams over a corpus of documents. Decodes corpus into utf-8. Note: word-mode simply takes items of corpus as words, char mode the (decoded) elements after calling list() on every item of corpus. 
 
     unit="char" splits each document into characters before forming n-grams;
     unit="word" splits on whitespace.
     """
-    def _dec(x):
-        return x.decode("utf-8", errors="replace") if isinstance(x, bytes) else x
-
     counts: Counter = Counter()
     if unit == 'char':
-        for doc in corpus:
-            tokens = list(_dec(doc))
+        for chunk in corpus:
+            tokens = list(chunk)
             counts.update(_ngrams(tokens, n))
     elif unit == 'word':
-        tokens = [_dec(word) for word in corpus]
+        tokens = list(corpus)
         counts.update(_ngrams(tokens, n))
 
     return counts
@@ -70,8 +67,8 @@ def _to_prob(counts: Counter) -> dict:
 
 
 def ngram_overlap(
-    corpus_a: Iterable[bytes],
-    corpus_b: Iterable[bytes],
+    corpus_a: Iterable[str],
+    corpus_b: Iterable[str],
     n: int = 1,
     unit: Unit = "word",
 ) -> float:
@@ -86,8 +83,8 @@ def ngram_overlap(
 
 
 def ngram_divergence(
-    corpus_a: Iterable[bytes],
-    corpus_b: Iterable[bytes],
+    corpus_a: Iterable[str],
+    corpus_b: Iterable[str],
     method: Literal["jsd", "kld"] = "jsd",
     smoothing: float = 1.0,
     n: int = 1,
@@ -334,7 +331,6 @@ def normalized_compression_distance(
 
     return (c_ab - min(c_a, c_b)) / max(c_a, c_b)
 
-
 def normalized_compression_distance_asymmetric(
     corpus_a: Iterable[str],
     corpus_b: Iterable[str],
@@ -382,7 +378,6 @@ def _sample_to_size(docs: list[str], target: int, rng: random.Random) -> list[st
         if total >= target:
             break
     return sample
-
 
 def sampled_distance(
     corpus_a: Iterable[str],
