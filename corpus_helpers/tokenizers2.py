@@ -1,8 +1,15 @@
 """
-Tokenizers. Mostly wrappers over HF tokenizers, with a few twists. 
-All methods should work with byte-strings instead of unicode character strings. 
+tokenizers2. Mostly wrappers over HF tokenizers.
+Not to conflate huggingface tokenizers and this tokenizers, named it tokenizers2. 
 
-Name: didn't want to conflate huggingface tokenizers and this tokenizers, so named it tokenizers2. 
+- dont use hf pre-tokenizers/normalizers, but supply iterables over whatever you want to tokenize. 
+    - to pre-tokenize/normalize, preferably use iterators from corpus_helpers.read
+- all tokenizers train/work on the byte level internally. this means that a string is first turned into bytes, and every byte is mapped to a displayable unicode character. some of these characters take up two bytes, so this is quite dirty. but it is how huggingface byte-level tokenizers do it though so we keep it the same. 
+- individual tokens are therefore in the byte-level character set (unicode character boundaries are not enforced)
+- to detokenize, the tokens need to be mapped to the byte strings that they represent, which are then concatenated, and decoded as utf-8
+- detokenize(tokenize(string)) == string, so decoding errors should not occur
+- the interface to the classes functions should be in the original string space, however
+    - except for the output of methods that return individual tokens, like encode/encode_batch/get_merge_list -- these return strings in the byte-level character set
 """
 
 from __future__ import annotations
@@ -12,7 +19,6 @@ from typing import Iterable
 from tokenizers import Tokenizer
 import json
 from tokenizers.trainers import BpeTrainer, UnigramTrainer
-from tokenizers.pre_tokenizers import ByteLevel
 from tokenizers.models import BPE, Unigram
 import os
 from collections import Counter
@@ -38,10 +44,16 @@ def _make_byte_encoder_dict():
             n += 1
     return {b: chr(c) for b, c in zip(bs, cs)}
 
-byte_encoder = _make_byte_encoder_dict()
+_BYTE_TO_CHAR = _make_byte_encoder_dict()
+_CHAR_TO_BYTE = {val: key for key, val in _BYTE_TO_CHAR.items()}
+_ALPHABET = list(_CHAR_TO_BYTE.keys())
 
 def to_bytelevel(text: str) -> str:
-    return "".join(byte_encoder[b] for b in text.encode("utf-8"))
+    return "".join(_BYTE_TO_CHAR[b] for b in text.encode("utf-8"))
+
+def from_bytelevel(tokens: list[str]) -> str: 
+    text_bytes = bytes([_CHAR_TO_BYTE[ch] for token in tokens for ch in token])
+    return text_bytes.decode(encoding="utf-8")
 
 # --------------- base tokenizer class and a few implementations ---------------
 
@@ -67,29 +79,31 @@ class BaseTokenizer(ABC):
         ...
 
     @abstractmethod
-    def encode(self, text: str) -> list[str]:
+    def encode_str(self, text: str) -> list[str]:
         """Tokenize text and return token strings."""
         ...
 
-    def encode_batch(self, texts: Iterable[str]) -> list[list[str]]:
-        return [self.tokenize(t) for t in texts]
-    
-    def tokenize(self, text: str) -> list[str]:
-        return self.encode(text)
-    
-    def tokenize_batch(self, texts: Iterable[str]) -> list[list[str]]:
-        return self.encode_batch(texts)
+    def decode_str(self, tokens: list[str]): 
+        return from_bytelevel(tokens)
     
     def is_trained(self):
         return self.tokenizer is not None
 
-    def measure_bpt(self, corpus: Iterable[bytes]) -> float:
-        """Mean bytes-per-token over corpus."""
+    def measure_bpt(self, corpus: Iterable[str]) -> float:
+        """Mean bytes-per-token over corpus.
+
+        Corpus items are word tokens with heavy repetition, so we encode each
+        unique item once and weight by its frequency. This is mathematically
+        identical to encoding every doc, but cuts the number of HF encode()
+        calls by ~50x — which also avoids the memory the Rust encode path
+        retains and never returns to the OS.
+        """
+        freq = Counter(corpus)
         total_bytes = 0
         total_tokens = 0
-        for doc in corpus:
-            total_bytes += len(doc)
-            total_tokens += len(self.tokenize(doc.decode("utf-8", errors="replace")))
+        for doc, count in freq.items():
+            total_bytes += count * len(doc.encode("utf-8"))
+            total_tokens += count * len(self.encode_str(doc))
         return total_bytes / total_tokens if total_tokens > 0 else float("nan")
 
 class AnyTokenizer(BaseTokenizer): 
@@ -100,53 +114,49 @@ class AnyTokenizer(BaseTokenizer):
         self.name = name
     def train(self, texts, **kwargs):
         pass
-    def tokenize(self, text):
+    def tokenize(self, text: str) -> list[str]:
         return self.tokenizer.encode(text).tokens
 
 class LeftmostLongestTokenizer(BaseTokenizer):
-    """ greedy tokenizer a.k.a maximum-matching tokenizer (uses HF's fallback implementation, when BPE is not supplied with a merge list) """
-    def __init__(self, terms, pre_tokenizer=None, normalizer=None, **kwargs):
+    """ greedy tokenizer a.k.a maximum-matching tokenizer (uses HF's fallback BPE implementation, which is used when BPE is missing the merge list) """
+    def __init__(self, terms, **kwargs):
         if isinstance(terms, dict): 
             terms = list(terms.keys())
         if not isinstance(terms, list): 
             terms = list(terms)
-        self.terms = terms
-        self.pre_tokenizer = pre_tokenizer
-        self.normalizer = normalizer 
+        self.terms = list(map(to_bytelevel, terms))
         super().__init__(texts=None, vocab_size=len(terms), dont_train=False, **kwargs)
 
-    def train(self, texts, **kwargs):
+    def train(self, texts: Iterable[str], **kwargs):
         tokenizer = Tokenizer(BPE())
         tokenizer.add_tokens(self.terms) # the HF tokenizer defaults to the leftmost-longest method when initialized in this way
-        tokenizer.pre_tokenizer = self.pre_tokenizer
-        tokenizer.normalizer = self.normalizer
         self.tokenizer = tokenizer
     
-    def tokenize(self, text):
+    def encode_str(self, text: str) -> list[str]:
         return self.tokenizer.encode(text).tokens
     
 class ExactTokenizer(BaseTokenizer): 
     """a tokenizer which finds the exact best tokenization, based on a criterion (e.g. minimize the number of tokens), over a direct acyclic graph (DAC) """
     pass
 
-# ---------- wrappers over standard HF tokenizers, probably not useful ---------
-
 class BPETokenizer(BaseTokenizer):
-    def __init__(self, texts, vocab_size, byte_level=True, dont_train=False, **kwargs):
-        self.byte_level=byte_level
+    def __init__(self, texts: Iterable[str], vocab_size, dont_train=False, **kwargs):
         super().__init__(texts, vocab_size, dont_train=False, **kwargs)
 
     def train(self, texts, **kwargs):
-        trainer = BpeTrainer(vocab_size=self.vocab_size, initial_alphabet=ByteLevel.alphabet(), **kwargs)
+        trainer = BpeTrainer(vocab_size=self.vocab_size, 
+                             initial_alphabet=_ALPHABET, **kwargs)
         bpe = Tokenizer(BPE())
-        if self.byte_level: 
-            # uni.pre_tokenizer = ByteLevel(add_prefix_space=False)
-            texts = map(to_bytelevel, texts)
-        bpe.train_from_iterator(texts, trainer)
+        bpe.train_from_iterator(map(to_bytelevel, texts), trainer)
         self.tokenizer = bpe
 
-    def encode(self, text):
-        return self.tokenizer.encode(text).tokens
+    def encode_str(self, text: str) -> list[str]:
+        return self.tokenizer.encode(to_bytelevel(text)).tokens
+
+    def get_merge_list(self):
+        merges = json.loads(self.tokenizer.to_str())["model"]["merges"]
+        # return [tuple(m.split(" ", 1)) for m in merges]
+        return merges
 
 class BPEFromMerges(BaseTokenizer):
     """BPE tokenizer constructed from a pre-existing merge list.
@@ -158,10 +168,8 @@ class BPEFromMerges(BaseTokenizer):
     unavoidable.
     """
 
-    def __init__(self, merges: list[tuple[str, str]] = (), byte_level: bool = True):
-        self.byte_level = byte_level
-        alphabet = sorted(ByteLevel.alphabet())
-        self._vocab: dict[str, int] = {c: i for i, c in enumerate(alphabet)}
+    def __init__(self, merges: list[tuple[str, str]] = ()):
+        self._vocab: dict[str, int] = {c: i for i, c in enumerate(sorted(_ALPHABET))}
         self._merges: list[tuple[str, str]] = []
         super().__init__(None, len(self._vocab), dont_train=True)
         if merges:
@@ -180,27 +188,22 @@ class BPEFromMerges(BaseTokenizer):
         self.vocab_size = len(self._vocab)
         self.tokenizer = Tokenizer(BPE(vocab=self._vocab, merges=self._merges))
 
-    def encode(self, text: str) -> list[str]:
-        if self.byte_level:
-            text = to_bytelevel(text)
-        return self.tokenizer.encode(text).tokens
+    def encode_str(self, text: str) -> list[str]:
+        return self.tokenizer.encode(to_bytelevel(text)).tokens
 
 
 class UnigramTokenizer(BaseTokenizer):
-    def __init__(self, texts, vocab_size, byte_level=True, dont_train=False, **kwargs):
-        self.byte_level=byte_level
+    def __init__(self, texts, vocab_size, dont_train=False, **kwargs):
         super().__init__(texts, vocab_size, dont_train, **kwargs)
 
     def train(self, texts, **kwargs):
         trainer = UnigramTrainer(vocab_size=self.vocab_size, 
-                                 initial_alphabet=ByteLevel.alphabet(),
+                                 initial_alphabet=_ALPHABET,
                                  **kwargs)
         uni = Tokenizer(Unigram())
-        if self.byte_level: 
-            # uni.pre_tokenizer = ByteLevel(add_prefix_space=False)
-            texts = map(to_bytelevel, texts)
+        texts = map(to_bytelevel, texts)
         uni.train_from_iterator(texts, trainer)
         self.tokenizer = uni
 
-    def encode(self, text):
+    def encode_str(self, text):
         return self.tokenizer.encode(text).tokens

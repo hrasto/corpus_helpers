@@ -47,15 +47,18 @@ def _ngram_counts(corpus: Iterable[bytes], n: int = 1, unit: Unit = "word") -> C
     unit="char" splits each document into characters before forming n-grams;
     unit="word" splits on whitespace.
     """
+    def _dec(x):
+        return x.decode("utf-8", errors="replace") if isinstance(x, bytes) else x
+
     counts: Counter = Counter()
-    if unit == 'char': 
-        for doc in corpus: 
-            tokens = list(doc.decode("utf-8", errors="replace"))
+    if unit == 'char':
+        for doc in corpus:
+            tokens = list(_dec(doc))
             counts.update(_ngrams(tokens, n))
-    elif unit == 'word': 
-        tokens = [word.decode("utf-8", errors="replace") for word in corpus]
+    elif unit == 'word':
+        tokens = [_dec(word) for word in corpus]
         counts.update(_ngrams(tokens, n))
-    
+
     return counts
 
 
@@ -118,72 +121,68 @@ def ngram_divergence(
     raise ValueError(f"unknown method: {method}")
 
 
-def _get_bpe_merges(corpus: Iterable[str], vocab_size: int, **trainer_kwargs) -> list[tuple[str, str]]:
-    """Train a BPE tokenizer on `corpus` and return its ordered merge list."""
-    tokenizer = BPETokenizer(corpus, vocab_size=vocab_size, **trainer_kwargs).tokenizer
-    merges = json.loads(tokenizer.to_str())["model"]["merges"]
-    # return [tuple(m.split(" ", 1)) for m in merges]
-    return merges
+# def bpe_merge_rank_correlation(
+#     corpus_a: Iterable[bytes],
+#     corpus_b: Iterable[bytes],
+#     vocab_size: int = 10000,
+#     method: Literal["spearman", "kendall"] = "kendall",
+#     min_shared: int = 50,
+# ) -> float:
+#     """Rank correlation of shared BPE merge rules between two corpora.
 
+#     Trains a BPE tokenizer on each corpus independently and computes the rank
+#     correlation of merge rules that appear in both merge tables. Returns a value
+#     in [-1, 1]; higher means more similar domain.
 
-def bpe_merge_rank_correlation(
-    corpus_a: Iterable[bytes],
-    corpus_b: Iterable[bytes],
-    vocab_size: int = 10000,
-    method: Literal["spearman", "kendall"] = "kendall",
-    min_shared: int = 50,
-) -> float:
-    """Rank correlation of shared BPE merge rules between two corpora.
+#     Kendall's τ (default) counts concordant vs discordant merge-order pairs and
+#     is more robust to the heavy-tailed rank distribution of BPE tables. Spearman
+#     is sensitive to the magnitude of rank disagreements.
 
-    Trains a BPE tokenizer on each corpus independently and computes the rank
-    correlation of merge rules that appear in both merge tables. Returns a value
-    in [-1, 1]; higher means more similar domain.
+#     Requires: pip install tokenizers
+#     """
+#     from scipy.stats import kendalltau, spearmanr
 
-    Kendall's τ (default) counts concordant vs discordant merge-order pairs and
-    is more robust to the heavy-tailed rank distribution of BPE tables. Spearman
-    is sensitive to the magnitude of rank disagreements.
+#     merges_a = _get_bpe_merges(
+#         (doc.decode("utf-8", errors="replace") for doc in corpus_a), vocab_size
+#     )
+#     merges_b = _get_bpe_merges(
+#         (doc.decode("utf-8", errors="replace") for doc in corpus_b), vocab_size
+#     )
 
-    Requires: pip install tokenizers
-    """
-    from scipy.stats import kendalltau, spearmanr
+#     rank_a = {m: i for i, m in enumerate(merges_a)}
+#     rank_b = {m: i for i, m in enumerate(merges_b)}
 
-    merges_a = _get_bpe_merges(
-        (doc.decode("utf-8", errors="replace") for doc in corpus_a), vocab_size
-    )
-    merges_b = _get_bpe_merges(
-        (doc.decode("utf-8", errors="replace") for doc in corpus_b), vocab_size
-    )
+#     shared = set(rank_a) & set(rank_b)
+#     if len(shared) < min_shared:
+#         raise ValueError(
+#             f"only {len(shared)} shared merge rules (< min_shared={min_shared}); "
+#             "increase vocab_size or corpus size"
+#         )
 
-    rank_a = {m: i for i, m in enumerate(merges_a)}
-    rank_b = {m: i for i, m in enumerate(merges_b)}
+#     ra = [rank_a[m] for m in shared]
+#     rb = [rank_b[m] for m in shared]
 
-    shared = set(rank_a) & set(rank_b)
-    if len(shared) < min_shared:
-        raise ValueError(
-            f"only {len(shared)} shared merge rules (< min_shared={min_shared}); "
-            "increase vocab_size or corpus size"
-        )
-
-    ra = [rank_a[m] for m in shared]
-    rb = [rank_b[m] for m in shared]
-
-    if method == "kendall":
-        stat, _ = kendalltau(ra, rb)
-    elif method == "spearman":
-        stat, _ = spearmanr(ra, rb)
-    else:
-        raise ValueError(f"unknown method: {method}")
-    return float(stat)
+#     if method == "kendall":
+#         stat, _ = kendalltau(ra, rb)
+#     elif method == "spearman":
+#         stat, _ = spearmanr(ra, rb)
+#     else:
+#         raise ValueError(f"unknown method: {method}")
+#     return float(stat)
 
 
 def bpe_overlap(
-    corpus_a: Iterable[bytes],
-    corpus_b: Iterable[bytes],
+    corpus_a: Iterable[str],
+    corpus_b: Iterable[str],
     *,
     vocab_size: int = 1_000_000,
     min_freq_fract: float = 1e-7,
+    min_freq_fract_b: float | None = None,
     k_steps: int = 20,
-    return_dict=False, 
+    log_k_auc: bool = False,
+    use_skyline: bool = True,
+    show_progress: bool = False,
+    return_dict=False,
     **kwargs,
 ) -> dict:
     """Asymmetric BPE-coverage metric: how well corpus_a's merge rules compress corpus_b.
@@ -192,74 +191,109 @@ def bpe_overlap(
        below min_freq_fract * total_bytes_a.
     2. At k_steps log-spaced values of k, build a tokenizer with the top-k merges,
        tokenize corpus_b, and record bytes-per-token (BPT).
-    3. Train BPE on corpus_b itself and measure the skyline BPT on corpus_b.
+    3. (use_skyline=True) Train BPE on corpus_b itself and measure the skyline BPT on corpus_b.
     4. Normalize: BPT_rel(k) = (BPT(k) - 1) / (BPT_skyline - 1), so 0 means no
        compression gain beyond single-byte tokens and 1 means as efficient as training
-       on b itself.
-    5. Compute AUC of BPT_rel over k/max_k in [0, 1].
+       on b itself.  With use_skyline=False, the curve reports raw BPT values instead.
+    5. Compute AUC over the x-axis in [0, 1].
+       With log_k_auc=False (default) x = k/max_k; with log_k_auc=True x = log(k)/log(max_k).
+
+    min_freq_fract_b: if not None, use this threshold for corpus_b's skyline BPE instead of
+        min_freq_fract.  Useful when corpus_b is much smaller or larger than corpus_a.
 
     Returns a dict with:
-        auc         — area under the BPT_rel curve (higher = more domain overlap)
-        bpt_skyline — BPT of a tokenizer trained and evaluated on corpus_b
-        curve       — list of (k, bpt_rel) pairs
+        auc         — area under the curve (higher = more domain overlap)
+        bpt_skyline — BPT of a tokenizer trained and evaluated on corpus_b (omitted when use_skyline=False)
+        curve       — list of (k, bpt_rel) or (k, bpt) pairs
         n_merges    — number of merges learned from corpus_a
     """
-    docs_a = list(corpus_a)
-    docs_b = list(corpus_b)
-    if not docs_a or not docs_b:
-        raise ValueError("both corpora must be non-empty")
+    pbar = None
+    if show_progress:
+        from tqdm.auto import tqdm
+        # total is set after k_values are known (depends on max_k)
+        pbar = tqdm(total=None, desc="bpe_overlap", unit="step")
 
-    str_a = [doc.decode("utf-8", errors="replace") for doc in docs_a]
-
-    size_a = sum(len(doc) for doc in docs_a)
+    size_a = sum(len(doc) for doc in corpus_a)
     min_freq = max(1, int(size_a * min_freq_fract))
-    merges_a = _get_bpe_merges(str_a, vocab_size=vocab_size, min_frequency=min_freq, **kwargs)
+    bpe_a = BPETokenizer(corpus_a, vocab_size=vocab_size, min_frequency=min_freq, show_progress=False, **kwargs)
+    merges_a = bpe_a.get_merge_list()
     max_k = len(merges_a)
     if max_k == 0:
         raise ValueError("no BPE merges learned from corpus_a; try a smaller min_freq_fract")
+
+    if pbar is not None:
+        pbar.set_postfix(step="merges_a")
+        pbar.update(1)
 
     # Log-spaced k schedule from 1 to max_k
     k_values = list(map(int, np.unique(np.geomspace(1, max_k, k_steps).round().astype(int))))
     if k_values[-1] != max_k:
         k_values.append(max_k)
 
+    if pbar is not None:
+        pbar.total = len(k_values) + (3 if use_skyline else 1)
+        pbar.refresh()
+
     # Sweep k incrementally: extend() only processes the delta on the Python side
-    tok = BPEFromMerges()
+    bpe_a_incremental = BPEFromMerges()
     prev_k = 0
     curve_k, curve_bpt = [], []
     for k in k_values:
-        tok.extend(merges_a[prev_k:k])
+        bpe_a_incremental.extend(merges_a[prev_k:k])
         curve_k.append(k)
-        curve_bpt.append(tok.measure_bpt(docs_b))
+        curve_bpt.append(bpe_a_incremental.measure_bpt(corpus_b))
         prev_k = k
+        if pbar is not None:
+            pbar.set_postfix(step=f"bpt k={k}")
+            pbar.update(1)
 
-    # Skyline: BPE trained and evaluated on corpus_b
-    size_b = sum(len(doc) for doc in docs_b)
-    min_freq_b = max(1, int(size_b * min_freq_fract))
-    str_b = [doc.decode("utf-8", errors="replace") for doc in docs_b]
-    merges_b = _get_bpe_merges(str_b, vocab_size=vocab_size, min_frequency=min_freq_b, **kwargs)
-    bpt_skyline = BPEFromMerges(merges_b).measure_bpt(docs_b)
+    if use_skyline:
+        # Skyline: BPE trained and evaluated on corpus_b
+        size_b = sum(len(doc) for doc in corpus_b)
+        _min_freq_fract_b = min_freq_fract_b if min_freq_fract_b is not None else min_freq_fract
+        min_freq_b = max(1, int(size_b * _min_freq_fract_b))
+        bpe_b = BPETokenizer(corpus_b, vocab_size=vocab_size, min_frequency=min_freq_b, show_progress=False, **kwargs)
+        merges_b = bpe_b.get_merge_list()
+        if pbar is not None:
+            pbar.set_postfix(step="skyline merges")
+            pbar.update(1)
+        bpt_skyline = BPEFromMerges(merges_b).measure_bpt(corpus_b)
+        if pbar is not None:
+            pbar.set_postfix(step="skyline bpt")
+            pbar.update(1)
 
-    denom = bpt_skyline - 1.0
-    if denom <= 0:
-        raise ValueError(f"bpt_skyline={bpt_skyline:.3f} <= 1.0; corpus_b may be too small to train BPE")
+        denom = bpt_skyline - 1.0
+        if denom <= 0:
+            raise ValueError(f"bpt_skyline={bpt_skyline:.3f} <= 1.0; corpus_b may be too small to train BPE")
+        curve_y = [(bpt - 1.0) / denom for bpt in curve_bpt]
+    else:
+        bpt_skyline = None
+        curve_y = list(curve_bpt)
 
-    bpt_rel = [(bpt - 1.0) / denom for bpt in curve_bpt]
-    k_norm = [k / max_k for k in curve_k]
-    auc = float(np.trapezoid(bpt_rel, k_norm))
+    if pbar is not None:
+        pbar.close()
 
-    if return_dict: 
-        return {
+    if log_k_auc:
+        log_max_k = np.log(max_k)
+        k_norm = [np.log(k) / log_max_k for k in curve_k]
+    else:
+        k_norm = [k / max_k for k in curve_k]
+    auc = float(np.trapezoid(curve_y, k_norm))
+
+    if return_dict:
+        result = {
             "auc": auc,
-            "bpt_skyline": bpt_skyline,
-            "curve": list(zip(curve_k, bpt_rel)),
+            "curve": list(zip(curve_k, curve_y)),
             "n_merges": max_k,
         }
+        if use_skyline:
+            result["bpt_skyline"] = bpt_skyline
+        return result
     return auc
 
 def normalized_compression_distance(
-    corpus_a: Iterable[bytes],
-    corpus_b: Iterable[bytes],
+    corpus_a: Iterable[str],
+    corpus_b: Iterable[str],
     compressor: Callable[[bytes], bytes] | None = None,
     *,
     symmetric: bool = False,
@@ -278,8 +312,8 @@ def normalized_compression_distance(
     Note: result is not strictly bounded to [0, 1]; for very short inputs the
     compressor's fixed overhead can push it above 1.0.
     """
-    a = b"".join(corpus_a)
-    b_ = b"".join(corpus_b)
+    a = "".join(corpus_a).encode('utf-8')
+    b_ = "".join(corpus_b).encode('utf-8')
 
     if len(a) < _NCD_SHORT_TEXT_THRESHOLD or len(b_) < _NCD_SHORT_TEXT_THRESHOLD:
         _log.warning(
@@ -302,8 +336,8 @@ def normalized_compression_distance(
 
 
 def normalized_compression_distance_asymmetric(
-    corpus_a: Iterable[bytes],
-    corpus_b: Iterable[bytes],
+    corpus_a: Iterable[str],
+    corpus_b: Iterable[str],
     compressor: Callable[[bytes], bytes] | None = None,
 ) -> float:
     """Asymmetric NCD suited for the case where |a| >> |b|.
@@ -318,8 +352,8 @@ def normalized_compression_distance_asymmetric(
     Interpretation: values near 0 mean b is well-predicted by a; values near
     (or above) 1 mean b contains information largely absent from a.
     """
-    a = b"".join(corpus_a)
-    b_ = b"".join(corpus_b)
+    a = "".join(corpus_a).encode('utf-8')
+    b_ = "".join(corpus_b).encode('utf-8')
 
     if len(b_) < _NCD_SHORT_TEXT_THRESHOLD:
         _log.warning(
@@ -336,30 +370,30 @@ def normalized_compression_distance_asymmetric(
 
 # ---- wrapper for sampled variants of the distance metrics --------------------
 
-def _sample_to_size(docs: list[bytes], target: int, rng: random.Random) -> list[bytes]:
+def _sample_to_size(docs: list[str], target: int, rng: random.Random) -> list[str]:
     """Sample documents (without replacement) until cumulative byte length >= target."""
     indices = list(range(len(docs)))
     rng.shuffle(indices)
-    sample: list[bytes] = []
+    sample: list[str] = []
     total = 0
     for i in indices:
         sample.append(docs[i])
-        total += len(docs[i])
+        total += len(docs[i].encode(encoding='utf-8'))
         if total >= target:
             break
     return sample
 
 
 def sampled_distance(
-    corpus_a: Iterable[bytes],
-    corpus_b: Iterable[bytes],
+    corpus_a: Iterable[str],
+    corpus_b: Iterable[str],
     metric: Callable[[list[bytes], list[bytes]], float],
     *,
     sample_size_per_iteration: int = 100_000,
     k: int = 30,
     threshold: float = 0.01,
     max_iterations: int = 1000,
-    return_window: bool = False,
+    return_dict: bool = False,
     seed: int | None = None,
     show_progress: bool = False,
 ) -> dict:
@@ -395,11 +429,14 @@ def sampled_distance(
         values        — all iteration values (only present when return_window=True)
     """
     rng = random.Random(seed)
-    docs_a = list(corpus_a)
-    docs_b = list(corpus_b)
-    if not docs_a or not docs_b:
+    
+    if not isinstance(corpus_a, list): 
+        corpus_a = list(corpus_a)
+    if not isinstance(corpus_b, list): 
+        corpus_b = list(corpus_b)
+    if not corpus_a or not corpus_b:
         raise ValueError("both corpora must be non-empty")
-
+    
     values: list[float] = []
     cumulative_means: list[float] = []
     converged = False
@@ -411,8 +448,8 @@ def sampled_distance(
         pbar = None
 
     for _ in range(max_iterations):
-        sample_a = _sample_to_size(docs_a, sample_size_per_iteration, rng)
-        sample_b = _sample_to_size(docs_b, sample_size_per_iteration, rng)
+        sample_a = _sample_to_size(corpus_a, sample_size_per_iteration, rng)
+        sample_b = _sample_to_size(corpus_b, sample_size_per_iteration, rng)
         values.append(metric(sample_a, sample_b))
         cumulative_means.append(float(np.mean(values)))
         if len(cumulative_means) >= k:
@@ -431,13 +468,12 @@ def sampled_distance(
         pbar.close()
 
     cm_window = cumulative_means[-k:] if len(cumulative_means) >= k else cumulative_means
-    result = {
-        "mean": cumulative_means[-1],
-        "std": float(np.std(cm_window, ddof=1)) if len(cm_window) > 1 else float("nan"),
-        "n_iterations": len(values),
-        "converged": converged,
-    }
-    if return_window:
-        result["values"] = list(values)
-    return result
+    if return_dict:
+        return {
+            "mean": cumulative_means[-1],
+            "std": float(np.std(cm_window, ddof=1)) if len(cm_window) > 1 else float("nan"),
+            "n_iterations": len(values),
+            "converged": converged,
+        }
+    return cumulative_means[-1]
 
