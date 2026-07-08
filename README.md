@@ -43,7 +43,9 @@ or explore notebooks in `notebooks/`.
 
 ---
 
-## Readers
+## Modules
+
+### Readers
 
 `GroupView` organizes files into a lazy iterable of restartable readers, suitable for passing directly to `VocabFilter`.
 
@@ -61,7 +63,7 @@ docs = GroupView([["a.txt", "b.txt"], ["c.txt"]], preprocessors=[split_line, low
 
 ---
 
-## Vocabulary
+### Vocabulary
 
 `VocabFilter` accumulates term and document/group frequencies across a corpus and supports threshold-based filtering.
 
@@ -85,12 +87,12 @@ Available vocab builders: `build_bpe_vocab`, `build_picky_bpe_vocab`, `build_uni
 
 ---
 
-## Domain distance
+### Domain distance
 
 `metrics.py` provides surface-level distance metrics between two text corpora.
 Each corpus is an **iterable of `str`**.
 
-### N-gram overlap and divergence
+#### N-gram overlap and divergence
 
 ```python
 from corpus_helpers.metrics import ngram_overlap, ngram_divergence
@@ -111,7 +113,7 @@ ngram_divergence(a, b, smoothing=0.5)        # custom Laplace smoothing pseudoco
 
 `unit="word"` tokenises on Unicode word boundaries; `unit="char"` splits into individual characters. `smoothing` controls the additive (Laplace) pseudocount added to every vocabulary entry before normalisation (default `1.0`).
 
-### Normalized Compression Distance
+#### Normalized Compression Distance
 
 ```python
 from corpus_helpers.metrics import (
@@ -131,7 +133,7 @@ ncd = normalized_compression_distance(a, b, symmetric=True)
 ncd_asym = normalized_compression_distance_asymmetric(a, b)
 ```
 
-### BPE overlap
+#### BPE overlap
 
 `bpe_overlap` is an **asymmetric** metric that measures how well BPE merge rules learned from corpus `a` compress corpus `b`. It evaluates actual tokenisation efficiency.
 
@@ -160,7 +162,7 @@ Key parameters:
 
 `bpe_overlap(a, b)` ≠ `bpe_overlap(b, a)` in general: if `a` has a much larger corpus, its merge table tends to generalise better to `b` than vice versa.
 
-### Sampled distance
+#### Sampled distance
 
 `sampled_distance` wraps any corpus-level metric with convergent random sampling, useful when corpora are large and a single full-corpus evaluation would be slow or memory-intensive.
 
@@ -185,13 +187,13 @@ Each iteration draws a random subset of documents whose total byte size is at le
 
 ---
 
-## Partitioning
+### Partitioning
 
 `partition.py` provides a pipeline for splitting a text corpus into topically coherent regions. A full walkthrough is in [`notebooks/partition_demo.ipynb`](notebooks/partition_demo.ipynb).
 
-### Typical pipeline
+#### Typical pipeline
 
-**1. Vectorise and fit a topic model**
+1. Vectorise and fit a topic model
 
 ```python
 from sklearn.feature_extraction.text import CountVectorizer
@@ -204,14 +206,14 @@ docs_vect = vectorizer.fit_transform(docs)
 model = partition.fit_topic_model(docs_vect, LatentDirichletAllocation, n_components=14, random_state=0)
 ```
 
-**2. Cluster documents in topic space**
+2. Cluster documents in topic space
 
 ```python
 docs_latent = model.transform(docs_vect)   # (n_docs, n_topics)
 assign = partition.partition(docs_latent, n_clusters=14, seed=0)
 ```
 
-**3. Compute region sizes and iteratively split the largest region**
+3. Compute region sizes and iteratively split the largest region
 
 ```python
 file_sizes = [len(d.encode()) for d in docs]   # bytes per document
@@ -224,7 +226,7 @@ assign2 = partition.split_largest_region(assign, docs_latent, region_sizes, seed
 # the other gets max(assign)+1
 ```
 
-**4. Find the most / least similar subsets of regions**
+4. Find the most / least similar subsets of regions
 
 ```python
 lo, hi = partition.make_subsets(assign2, docs_latent, subset_size=3)
@@ -232,7 +234,7 @@ lo, hi = partition.make_subsets(assign2, docs_latent, subset_size=3)
 # hi: tuple of region ids with highest mean pairwise cosine distance (most dissimilar)
 ```
 
-### Saving and reloading a topic model
+#### Saving and reloading a topic model
 
 ```python
 partition.save_topic_model(model, vectorizer, path="./my_model")
@@ -241,13 +243,13 @@ model, vectorizer = partition.load_topic_model("./my_model")
 
 ---
 
-## Tokenizers
+### Tokenizers
 
 `tokenizers2.py` provides tokenizer wrappers built on top of [HuggingFace `tokenizers`](https://github.com/huggingface/tokenizers), all operating on byte-level representations. The module is named `tokenizers2` to avoid shadowing the HF library.
 
 All classes share a common interface via `BaseTokenizer`: construct with a text iterable to train immediately, then call `.encode_str(text)` to get a list of token strings in the byte-level character set. Use `.decode_str(tokens)` to convert back to a plain string.
 
-### Leftmost-longest (maximum matching)
+#### Leftmost-longest (maximum matching)
 
 ```python
 from corpus_helpers.tokenizers2 import LeftmostLongestTokenizer
@@ -258,7 +260,7 @@ tok.encode_str("hello world")   # → list of token strings (byte-level char set
 
 Greedily picks the longest matching token at each position. Relies on HF's BPE fallback (no merge list), so no training corpus is needed — just supply a vocabulary.
 
-### BPE tokenizer (trained from scratch)
+#### BPE tokenizer (trained from scratch)
 
 ```python
 from corpus_helpers.tokenizers2 import BPETokenizer
@@ -269,7 +271,7 @@ tok.encode_str("hello world")   # → list of token strings (byte-level char set
 
 Trains a standard byte-level BPE tokenizer via HuggingFace `tokenizers`. Any keyword arguments accepted by `BpeTrainer` (e.g. `min_frequency`) can be passed through.
 
-### BPE tokenizer from a merge list
+#### BPE tokenizer from a merge list
 
 `BPEFromMerges` constructs a BPE tokenizer from a pre-existing list of merge rules, and supports incremental extension without retraining.
 
@@ -290,7 +292,7 @@ bpt = tok.measure_bpt(corpus)     # → float
 
 The internal vocab is maintained incrementally in Python, so `extend()` is O(new merges). The underlying HF `Tokenizer` object is rebuilt on each `extend()` call (HF has no public add-merge API), but that cost is unavoidable. This class is used internally by `bpe_overlap` to sweep k values efficiently.
 
-### Wrapping an external tokenizer
+#### Wrapping an external tokenizer
 
 ```python
 from corpus_helpers.tokenizers2 import AnyTokenizer
