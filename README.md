@@ -300,3 +300,27 @@ from corpus_helpers.tokenizers2 import AnyTokenizer
 tok = AnyTokenizer(my_hf_tokenizer)   # any object with .encode(text).tokens
 tok.encode_str("hello world")
 ```
+
+#### Morphological alignment
+
+`BaseTokenizer.morphological_alignment` measures how well a tokenizer's segment boundaries match gold morpheme boundaries from a lexicon, returning boundary precision, recall, and F1.
+
+```python
+from corpus_helpers.read import load_lexicon
+
+# Load any pipe-delimited morpheme lexicon (one word per line, e.g. "walk|ing")
+# CELEX files (commercial, LDC license required) work directly with this format.
+lexicon = load_lexicon("path/to/en_morpho_celex.txt")
+
+tok = BPETokenizer(texts, vocab_size=4096)
+scores = tok.morphological_alignment(lexicon)
+# → {"precision": 0.42, "recall": 0.71, "f1": 0.53}
+```
+
+`min_segments` (default `1`) filters the lexicon to words with at least that many morphemes, which is useful to focus evaluation on clearly segmented compounds:
+
+```python
+scores = tok.morphological_alignment(lexicon, min_segments=2)
+```
+
+A full sweep across vocab sizes and tokenizer types is shown in [`notebooks/morpho_alignment_demo.ipynb`](notebooks/morpho_alignment_demo.ipynb).

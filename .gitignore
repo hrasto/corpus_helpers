@@ -29,3 +29,6 @@ htmlcov/
 *.pkl
 *.xml
 .claude/
+
+# CELEX data files (commercial license — do not redistribute)
+corpus_helpers/data/*.txt

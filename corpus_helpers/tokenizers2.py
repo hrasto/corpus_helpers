@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Iterable
 from tokenizers import Tokenizer
 import json
+import logging
 from tokenizers.trainers import BpeTrainer, UnigramTrainer
 from tokenizers.models import BPE, Unigram
 import os
@@ -51,9 +52,17 @@ _ALPHABET = list(_CHAR_TO_BYTE.keys())
 def to_bytelevel(text: str) -> str:
     return "".join(_BYTE_TO_CHAR[b] for b in text.encode("utf-8"))
 
-def from_bytelevel(tokens: list[str]) -> str: 
+def from_bytelevel(tokens: list[str]) -> str:
     text_bytes = bytes([_CHAR_TO_BYTE[ch] for token in tokens for ch in token])
     return text_bytes.decode(encoding="utf-8")
+
+def _boundary_positions(segments: list[str]) -> set[int]:
+    positions: set[int] = set()
+    pos = 0
+    for seg in segments[:-1]:
+        pos += len(seg)
+        positions.add(pos)
+    return positions
 
 # --------------- base tokenizer class and a few implementations ---------------
 
@@ -105,6 +114,43 @@ class BaseTokenizer(ABC):
             total_bytes += count * len(doc.encode("utf-8"))
             total_tokens += count * len(self.encode_str(doc))
         return total_bytes / total_tokens if total_tokens > 0 else float("nan")
+
+    def morphological_alignment(
+        self,
+        lexicon: dict[str, list[str]],
+        min_segments: int = 1,
+    ) -> dict[str, float]:
+        """Boundary-F1 against a gold morpheme lexicon.
+
+        lexicon maps surface form -> list of morpheme strings (original encoding,
+        not byte-level). Use corpus_helpers.read.load_lexicon() to build it from a pipe-delimited file.
+        """
+        tp = fp = fn = 0
+        for word, gold_segs in lexicon.items():
+            if len(gold_segs) < min_segments:
+                continue
+            gold_segs_bl = [to_bytelevel(s) for s in gold_segs]
+            pred_segs = self.encode_str(word)
+            if "".join(pred_segs) != "".join(gold_segs_bl):
+                logging.warning(
+                    f"reconstruction mismatch: gold ({'|'.join(gold_segs_bl)}) "
+                    f"!= pred ({'|'.join(pred_segs)})"
+                )
+                continue
+            pred_b = _boundary_positions(pred_segs)
+            gold_b = _boundary_positions(gold_segs_bl)
+            tp += len(pred_b & gold_b)
+            fp += len(pred_b - gold_b)
+            fn += len(gold_b - pred_b)
+
+        precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+        recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+        f1 = (
+            2 * precision * recall / (precision + recall)
+            if (precision + recall) > 0
+            else 0.0
+        )
+        return dict(precision=precision, recall=recall, f1=f1)
 
 class AnyTokenizer(BaseTokenizer): 
     """ not sure if this is useful but this just takes an 'external' tokenizer object that has a tokenize member function and calls it instead of using its own implementation """
@@ -206,4 +252,4 @@ class UnigramTokenizer(BaseTokenizer):
         self.tokenizer = uni
 
     def encode_str(self, text):
-        return self.tokenizer.encode(text).tokens
+        return self.tokenizer.encode(to_bytelevel(text)).tokens

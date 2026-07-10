@@ -19,19 +19,19 @@ def read(files, size = -1):
         except FileNotFoundError:
             logging.warning(f"file not found: {file}")
 
-def divide(texts, divide_fn):
+def split_by_fn(texts, divide_fn):
     for text in texts:
         for chunk in divide_fn(text):
             if not chunk: continue
             yield chunk
 
-def split_by(texts, pattern):
-    return divide(texts, lambda text: re.split(pattern, text, flags=re.UNICODE))
+def split_by_regex(texts, pattern):
+    return split_by_fn(texts, lambda text: re.split(pattern, text, flags=re.UNICODE))
 
 # split_word = partial(split_by, pattern=r"[^\W\d_]+|\d+|[^\w\s]+")
-split_word = partial(split_by, pattern=r"(\W)")
-split_line = partial(split_by, pattern="(\n)")
-split_pipe = partial(split_by, pattern="(\\|)")
+split_word = partial(split_by_regex, pattern=r"(\W)")
+split_line = partial(split_by_regex, pattern="(\n)")
+split_pipe = partial(split_by_regex, pattern="(\\|)")
 
 def as_bytes(texts, encoding='utf-8', errors='replace'):
     for text in texts:
@@ -57,6 +57,17 @@ def delete(texts, string=""):
 delete_pipe = partial(delete, string="|")
 delete_newline = partial(delete, string="\n")
 delete_blank = partial(delete, string=' ')
+
+
+def load_lexicon(path) -> dict[str, list[str]]:
+    """Load a pipe-delimited morpheme lexicon (one word per line, e.g. 'walk|ing')."""
+    lexicon = {}
+    lines = restartable_file_reader([path], preprocessors=[split_line, delete_newline])
+    for line in lines: 
+        segs = line.split('|')
+        if segs:
+            lexicon["".join(segs)] = segs
+    return lexicon
 
 
 class _RestartableChain:
