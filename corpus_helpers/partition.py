@@ -2,19 +2,63 @@ import itertools
 import os
 import pickle
 import logging
+from typing import Iterable
 
 import numpy as np
 from sklearn.cluster import KMeans
 from sklearn.metrics import pairwise_distances
 from sklearn.manifold import TSNE
+from sklearn.decomposition import LatentDirichletAllocation
+from sklearn.feature_extraction.text import CountVectorizer
+from k_means_constrained import KMeansConstrained
+
+
+def _clamp(value, min_value=0, max_value=1):
+    return max(min(value, max_value), min_value)
+
+
+class KMeansConstrainedRel(KMeansConstrained):
+    def __init__(self, n_clusters=8, size_min=None, size_max=None, init='k-means++', n_init=10, max_iter=300, tol=0.0001, verbose=False, random_state=None, copy_x=True, n_jobs=1):
+        """ size_min, size_max: if None, will be determined as .5/n_clusters and 2/n_clusters """
+        self._size_min = size_min
+        self._size_max = size_max
+        super().__init__(n_clusters, size_min, size_max, init, n_init, max_iter, tol, verbose, random_state, copy_x, n_jobs)
+
+    def fit_predict(self, X, y=None):
+        n_docs = X.shape[0]
+
+        if isinstance(self._size_min, float):
+            self.size_min = int(n_docs * _clamp(self._size_min))
+        elif self._size_min is None:
+            self.size_min = int(n_docs * .5 / self.n_clusters)
+        elif isinstance(self._size_min, int):
+            self.size_min = self._size_min
+        else:
+            raise ValueError(f"invalid size_min type: received {type(self.size_min)}, expected float, int, or None")
+
+        if isinstance(self._size_max, float):
+            self.size_max = int(n_docs * _clamp(self._size_max))
+        elif self._size_max is None:
+            self.size_max = int(n_docs * 2 / self.n_clusters)
+        elif isinstance(self._size_max, int):
+            self.size_max = self._size_max
+        else:
+            raise ValueError(f"invalid size_min type: received {type(self.size_max)}, expected float, int, or None")
+
+        return super().fit_predict(X, y)
 
 
 # --- topic model ---
 
-def fit_topic_model(docs_vect, model_class, **model_kwargs):
+def fit_topic_model(docs: Iterable[Iterable[str]], model_class = LatentDirichletAllocation, model_kwargs:dict=None, cv_kwargs:dict=None):
     """Fit a topic model on a document-term matrix. Returns the fitted model."""
-    return model_class(**model_kwargs).fit(docs_vect)
-
+    cv_kwargs = cv_kwargs or {}
+    cv = CountVectorizer(**cv_kwargs)
+    docs_vect = cv.fit_transform(docs)
+    model_kwargs = model_kwargs or {}
+    topic_model = model_class(**model_kwargs)
+    docs_latent = topic_model.fit_transform(docs_vect)
+    return docs_latent, (topic_model, cv)
 
 def save_topic_model(model, vectorizer, path):
     os.makedirs(path, exist_ok=True)
@@ -65,7 +109,7 @@ def plot_top_words(model, feature_names, n_top_words=15, title=''):
     return fig, axes
 
 
-def fit_tsne(docs_latent, n_components=2, n_points=None, seed=0):
+def fit_transform_tsne(docs_latent, n_components=2, n_points=None, seed=0):
     """Fit t-SNE on docs_latent, optionally subsampling to n_points. Returns 2D array."""
     # TODO: sequential slice may be biased if docs are ordered by corpus; consider shuffling first
     X = docs_latent[:n_points] if n_points is not None else docs_latent
