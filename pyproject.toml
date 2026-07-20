@@ -16,8 +16,10 @@ dependencies = [
     "pandas",
     "matplotlib",
     "seaborn",
-    "k-means-constrained",
 ]
+
+[project.optional-dependencies]
+kmeans = ["k-means-constrained"]
 
 [tool.setuptools.packages.find]
 where = ["."]
